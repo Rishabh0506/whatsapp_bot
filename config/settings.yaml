@@ -1,0 +1,46 @@
+# Footwear helpline bot - settings.
+# Secrets (API keys, tokens) do NOT go here; they go in the .env file.
+
+app:
+  host: 127.0.0.1
+  port: 8000
+  # The address this server is reached at. The simulator uses it for webhook calls and media links.
+  # For real WhatsApp this becomes your public HTTPS address.
+  public_base_url: http://127.0.0.1:8000
+
+channel:
+  # simulator = the WhatsApp simulator built into this server (for testing)
+  # whatsapp  = real WhatsApp Cloud API (needs the WHATSAPP_* values in .env)
+  mode: simulator
+  graph_api_version: v23.0        # Meta Graph API version used in whatsapp mode
+  # WhatsApp delivers each photo as a separate message. Photos from the same user that arrive
+  # within this many seconds of each other are treated as one item (spec: several photos = one record).
+  batch_wait_seconds: 6
+
+core:
+  provider: gemini                # gemini | mock (mock = fake answers, no API key needed)
+  prompt: diagnosis_v1            # file in config/prompts/ (read on every request, so edits apply at once)
+  max_image_side: 1600            # images are resized to this many pixels on the long side before the model sees them
+  max_images_per_item: 5
+
+gemini:
+  model: gemini-3.5-flash         # any vision model from Google AI Studio; run scripts/check_gemini.py to list yours
+  api_base: https://generativelanguage.googleapis.com/v1beta
+  temperature: null               # null = the model's default
+  schema_mode: json_schema        # json_schema | openapi (fallback for models that reject the first)
+  timeout_seconds: 120
+  max_retries: 2
+  # Extra generationConfig passed to Gemini as-is, e.g. {thinkingConfig: {thinkingLevel: low}}
+  generation_config_extra: {}
+
+rules:
+  # Confidence bands (spec section 4). Proposed values; the final ones come from the test plan.
+  accept_threshold: 0.80          # >= this: accept the value
+  unknown_below: 0.50             # < this: the value becomes Unknown
+  # Between the two: ask one follow-up question or request a better photo (product-deciding fields only).
+
+simulator:
+  # Re-compress uploaded photos roughly the way WhatsApp does, so the model sees what it will see later
+  compress_like_whatsapp: true
+  max_side: 1600
+  jpeg_quality: 80

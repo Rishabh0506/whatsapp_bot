@@ -1,0 +1,99 @@
+# The 10 diagnosis fields. The order here is the order used everywhere:
+# in the prompt, the model's output format, the chat reply and the debug panel.
+#
+#   list:              take the allowed values from reference/lists.json (imported from the Lists workbook)
+#   values:            a fixed list defined here (for fields the workbook has no list for)
+#   exclude:           values from the list that this field may NOT use
+#   kind: issue_pair   the field is an Issue Category + Damage Mode pair, or None
+#   product_deciding:  true = if still below the accept band, the query needs a follow-up (spec section 4)
+#   description:       what the model is told about the field (edit freely; it goes into the prompt)
+#
+# To add a field later: add an entry here. The prompt, output format, validation,
+# rules, chat reply and debug panel pick it up automatically.
+
+fields:
+  - key: image_status
+    label: Image Status
+    values: [Usable, Blurry, Damage Not Visible, Not Footwear, More Than One Item]
+    product_deciding: false
+    description: >
+      Whether the photo(s) can be used for diagnosis. Usable = footwear clearly visible and the problem can be judged.
+      Blurry = too blurred, dark or small to judge. Damage Not Visible = footwear is clear but no damage or problem
+      can be seen. Not Footwear = the photo does not show footwear. More Than One Item = different footwear items are
+      shown and it is unclear which one the question is about (a matching pair counts as ONE item).
+
+  - key: footwear_type
+    label: Footwear Type
+    list: footwear_type
+    product_deciding: false
+    description: The kind of footwear shown.
+
+  - key: part
+    label: Part
+    list: part
+    product_deciding: true
+    description: The part of the footwear where the main issue is.
+
+  - key: issue_category
+    label: Issue Category
+    list: issue_category
+    product_deciding: true
+    description: The broad category of the main issue.
+
+  - key: damage_mode
+    label: Damage Mode
+    list: damage_mode
+    product_deciding: true
+    description: >
+      The specific main issue. It must belong to the chosen Issue Category (see the category shown next to each
+      damage mode in the list).
+
+  - key: secondary_issue
+    label: Secondary Issue
+    kind: issue_pair
+    product_deciding: false
+    description: >
+      A second, different issue visible on the same item, as an Issue Category + Damage Mode pair. Use None for both
+      if there is no second issue.
+
+  - key: receiving_substrate
+    label: Receiving Substrate
+    list: substrate
+    exclude: [NA]
+    product_deciding: true
+    description: >
+      The material of the part that has the problem (the surface that would receive a repair or treatment).
+
+  - key: applied_substrate
+    label: Applied Substrate
+    list: substrate
+    product_deciding: true
+    description: >
+      The material that would be joined or applied to the receiving part (for example the sole being stuck back to
+      a leather upper). NA when no second material is involved (stains, fading, scratches, odour and similar).
+
+  - key: damage_extent
+    label: Damage Extent
+    values: [Small / Localised, Large Area, NA, Unknown]
+    product_deciding: true
+    description: >
+      How much of the item is affected. Small / Localised = confined to a small area (for example a sole gap of a
+      few centimetres, one stain spot, one detached stone). Large Area = a large part is affected (for example the sole
+      off along most of its length, widespread staining). NA = smell, noise or preventive care.
+
+  - key: glue_fix_possible
+    label: Glue Fix Possible
+    values:
+      - "Yes"
+      - "No – Weight-Bearing Part"
+      - "No – Material Destroyed"
+      - "No – Surface Glue Cannot Hold"
+      - "No – Not a Glue Problem"
+      - Unknown
+    product_deciding: true
+    description: >
+      Whether a consumer could fix this with an adhesive. Yes = an adhesive repair is suitable. No – Weight-Bearing
+      Part = a load-bearing part (for example a snapped heel) that glue alone will not hold safely. No – Material
+      Destroyed = the material itself is broken down or missing. No – Surface Glue Cannot Hold = the surfaces cannot
+      take glue (for example crumbling, oily or very smooth). No – Not a Glue Problem = stains, fading, scratches,
+      odour, noise, wear and similar.

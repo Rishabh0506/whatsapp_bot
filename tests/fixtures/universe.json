@@ -1,0 +1,84 @@
+{
+ "rows": [
+  {
+   "object": "Footwear",
+   "footwear_type": "Formal Shoes",
+   "part": "Sole",
+   "issue_category": "Breakage / Crack / Gaps",
+   "damage_mode": "Sole Separation - Partial",
+   "receiving_substrate": "Leather / PU",
+   "applied_substrate": "Leather / Rubber / TPR",
+   "sn": 1
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Formal Shoes",
+   "part": "Upper",
+   "issue_category": "Stains / Marks",
+   "damage_mode": "Water Marks",
+   "receiving_substrate": "Leather",
+   "applied_substrate": "NA",
+   "sn": 2
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Casual Shoes",
+   "part": "Sole",
+   "issue_category": "Breakage / Crack / Gaps",
+   "damage_mode": "Sole Separation - Partial",
+   "receiving_substrate": "Leather / PU / Canvas",
+   "applied_substrate": "Rubber / TPR / PU / EVA",
+   "sn": 3
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Casual Shoes",
+   "part": "Upper",
+   "issue_category": "Tears",
+   "damage_mode": "Hole / Tear in Upper",
+   "receiving_substrate": "Leather / PU / Canvas",
+   "applied_substrate": "Leather / Canvas",
+   "sn": 4
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Sports Shoes",
+   "part": "Sole",
+   "issue_category": "Breakage / Crack / Gaps",
+   "damage_mode": "Sole Separation - Partial",
+   "receiving_substrate": "EVA / PU / Mesh / Textile",
+   "applied_substrate": "Rubber / EVA",
+   "sn": 5
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Sports Shoes",
+   "part": "Upper",
+   "issue_category": "Stains / Marks",
+   "damage_mode": "Dirt / Grime",
+   "receiving_substrate": "Leather / Mesh / Textile / PU",
+   "applied_substrate": "NA",
+   "sn": 6
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "High Heels",
+   "part": "Heel",
+   "issue_category": "Breakage / Crack / Gaps",
+   "damage_mode": "Heel Broken / Snapped",
+   "receiving_substrate": "Plastic / Wood",
+   "applied_substrate": "Plastic / Wood",
+   "sn": 7
+  },
+  {
+   "object": "Footwear",
+   "footwear_type": "Boots",
+   "part": "Upper",
+   "issue_category": "Scratches",
+   "damage_mode": "Scuff Marks",
+   "receiving_substrate": "Leather / PU",
+   "applied_substrate": "NA",
+   "sn": 8
+  }
+ ]
+}
