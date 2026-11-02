@@ -3,10 +3,12 @@ import asyncio
 import io
 import json
 
+import pytest
 from PIL import Image
 
 from app.core.pipeline import DiagnosisService
 from app.core.prompt import build_schema, load_prompt, to_openapi_schema
+from app.core.providers.base import ProviderError
 from app.core.providers.gemini import GeminiProvider
 from app.core.providers.mock import MockProvider
 from app.core.rules import apply_rules
@@ -136,3 +138,71 @@ def test_gemini_request_and_parse(reference):
             "modelVersion": "gemini-x-001"}
     text, out = GeminiProvider.parse_response(resp)
     assert out["parsed"]["part"]["value"] == "Sole" and out["usage"]["input_tokens"] == 1000
+
+
+# ---------------------------------------------------------------- customer replies
+def _result(action, **values):
+    base = {"image_status": "Usable", "footwear_type": "Formal Shoes", "damage_mode": "Sole Separation - Full",
+            "glue_fix_possible": "Yes"}
+    base.update(values)
+    fields = {k: {"label": k, "value": v, "status": "accepted", "confidence": 0.95, "model_value": v}
+              for k, v in base.items()}
+    fields["secondary_issue"] = {"label": "Secondary Issue", "value": "None", "status": "accepted",
+                                 "issue_category": "None", "damage_mode": "None", "confidence": 0.9}
+    return {"fields": fields, "decision": {"action": action, "fields": []}}
+
+
+def test_reply_accept_is_plain_language():
+    from app import replies
+    text = replies.diagnosis(_result("accept"))
+    assert "formal shoes" in text and "sole has come off completely" in text and "adhesive" in text
+    assert "0.9" not in text and "Glue Fix" not in text
+
+
+def test_reply_other_decisions():
+    from app import replies
+    assert "blurry" in replies.diagnosis(_result("better_photo", image_status="Blurry"))
+    assert "close-up" in replies.diagnosis(_result("ask_problem", image_status="Damage Not Visible"))
+    r = _result("follow_up")
+    r["fields"]["glue_fix_possible"]["status"] = "check"
+    text = replies.diagnosis(r)
+    assert "want to be sure" in text and "adhesive" not in text
+    r["fields"]["damage_mode"]["status"] = "unknown"      # unsure about the damage -> don't name it
+    assert "sole" not in replies.diagnosis(r)
+    assert "something went wrong" in replies.error(RuntimeError("secret detail"))
+    assert "secret" not in replies.error(RuntimeError("secret detail"))
+
+
+# ---------------------------------------------------------------- OpenRouter
+def test_openrouter_request_and_parse(reference):
+    from app.core.providers.base import ImageInput
+    from app.core.providers.openrouter import OpenRouterProvider
+    o = OpenRouterProvider("k", "google/gemini-x", temperature=0.1, reasoning_effort="low",
+                           extra={"provider": {"order": ["google-ai-studio"]}})
+    schema = build_schema(reference.fields)
+    body = o.build_request([ImageInput(b"abc")], "do it", schema, "json_schema")
+    assert body["messages"][0] == {"role": "system", "content": "do it"}
+    assert body["messages"][1]["content"][0]["image_url"]["url"] == "data:image/jpeg;base64,YWJj"
+    assert body["response_format"]["json_schema"]["schema"] == schema and body["response_format"]["json_schema"]["strict"]
+    assert body["temperature"] == 0.1 and body["reasoning"] == {"effort": "low"}
+    # extra routing settings are merged, not replacing "only providers that honour the schema"
+    assert body["provider"] == {"require_parameters": True, "order": ["google-ai-studio"]}
+    resp = {"model": "google/gemini-x", "choices": [{"message": {"content": "```json\n" + json.dumps(answer()) + "\n```"},
+                                                     "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200, "cost": 0.002}}
+    text, out = OpenRouterProvider.parse_response(resp)
+    assert out["parsed"]["part"]["value"] == "Sole" and out["usage"]["cost_usd"] == 0.002
+    with pytest.raises(ProviderError):
+        OpenRouterProvider.parse_response({"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+    with pytest.raises(ProviderError, match="OPENROUTER_API_KEY"):
+        OpenRouterProvider("", "m")
+
+
+def test_default_provider_is_openrouter(config_dir, tmp_path, monkeypatch):
+    from app.config import Settings
+    from app.core.providers import make_provider
+    from app.core.reference import Reference
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    s = Settings.load(config_dir, tmp_path / "data")
+    p = make_provider(s, Reference.load(config_dir))
+    assert p.name == "openrouter" and p.model == "google/gemini-3.5-flash"

@@ -45,8 +45,8 @@ class WhatsAppClient:
         res = await self.send(payloads.text_message(to, body))
         return (res.get("messages") or [{}])[0].get("id", "")
 
-    async def mark_read(self, message_id: str) -> None:
+    async def mark_read(self, message_id: str, typing: bool = False) -> None:
         try:
-            await self.send(payloads.read_receipt(message_id))
+            await self.send(payloads.read_receipt(message_id, typing))
         except WhatsAppError as e:          # a failed read receipt must never break the conversation
             log.warning("mark_read failed: %s", e)

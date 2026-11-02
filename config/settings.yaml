@@ -8,6 +8,12 @@ app:
   # For real WhatsApp this becomes your public HTTPS address.
   public_base_url: http://127.0.0.1:8000
 
+dashboard:
+  # Backend dashboard: the 10 fields, confidence scores, decisions and raw model output.
+  # Kept on its own port and on 127.0.0.1 so only this computer can open it - never expose this port.
+  host: 127.0.0.1
+  port: 8001
+
 channel:
   # simulator = the WhatsApp simulator built into this server (for testing)
   # whatsapp  = real WhatsApp Cloud API (needs the WHATSAPP_* values in .env)
@@ -18,13 +24,26 @@ channel:
   batch_wait_seconds: 6
 
 core:
-  provider: gemini                # gemini | mock (mock = fake answers, no API key needed)
+  provider: openrouter            # openrouter | gemini (Google AI Studio directly) | mock (fake answers, no key)
   prompt: diagnosis_v1            # file in config/prompts/ (read on every request, so edits apply at once)
   max_image_side: 1600            # images are resized to this many pixels on the long side before the model sees them
   max_images_per_item: 5
 
+openrouter:
+  # Used when core.provider is openrouter. Key: OPENROUTER_API_KEY in .env.
+  model: google/gemini-3.5-flash  # OpenRouter model id; run scripts/check_gemini.py to list the Gemini models
+  api_base: https://openrouter.ai/api/v1
+  temperature: null               # null = the model's default
+  reasoning_effort: null          # null = model default; or minimal | low | medium | high (Gemini thinking level)
+  timeout_seconds: 120
+  max_retries: 2
+  app_title: Footwear helpline bot  # how requests are labelled in your OpenRouter activity page
+  # Extra fields added to every request as-is, e.g. to pin the route: {provider: {order: [google-ai-studio]}}
+  request_extra: {}
+
 gemini:
-  model: gemini-3.5-flash         # any vision model from Google AI Studio; run scripts/check_gemini.py to list yours
+  # Only used when core.provider is gemini (Google AI Studio directly). Key: GEMINI_API_KEY in .env.
+  model: gemini-3.5-flash         # Google AI Studio model name
   api_base: https://generativelanguage.googleapis.com/v1beta
   temperature: null               # null = the model's default
   schema_mode: json_schema        # json_schema | openapi (fallback for models that reject the first)

@@ -11,6 +11,7 @@ The phone's side (used by the chat page):
   POST /sim/api/reply         user taps a reply button / list row
   GET  /sim/api/messages      the chat history the phone would show
   GET  /sim/api/media/{id}    photo for display in the chat
+  GET  /sim/api/presence      whether the bot is showing "typing…" in this user's chat
 """
 from __future__ import annotations
 
@@ -29,14 +30,15 @@ from PIL import Image, ImageOps
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
 
 from .. import http
 from ..config import SIM_ACCESS_TOKEN, SIM_APP_SECRET, SIM_PHONE_NUMBER_ID
+from ..static import NoCacheStaticFiles
 
 log = logging.getLogger("simulator")
 STATIC = Path(__file__).parent / "static"
 MEDIA_URL_TTL = 300   # Cloud API media URLs expire after 5 minutes
+TYPING_TTL = 25       # WhatsApp hides the typing indicator after 25 seconds, or when the reply arrives
 
 
 class SimStore:
@@ -45,6 +47,7 @@ class SimStore:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.Lock()
+        self.typing_until: dict[str, float] = {}     # wa_id -> time the typing indicator disappears
         self.media_dir = path.parent / "sim_media"
         self.media_dir.mkdir(parents=True, exist_ok=True)
         with self.lock:
@@ -137,10 +140,15 @@ async def graph_send(request: Request):
     sim: SimStore = request.app.state.sim
     if p.get("status") == "read":
         sim.q("UPDATE messages SET status='read' WHERE id=?", (p.get("message_id"),))
+        if (p.get("typing_indicator") or {}).get("type") == "text":
+            rows = sim.q("SELECT wa_id FROM messages WHERE id=? AND sender='user'", (p.get("message_id"),))
+            if rows:
+                sim.typing_until[rows[0]["wa_id"]] = time.time() + TYPING_TTL
         return JSONResponse({"success": True})
     if p.get("messaging_product") != "whatsapp" or not p.get("to") or p.get("type") not in ("text", "interactive", "image"):
         return JSONResponse({"error": {"message": "Invalid message payload", "code": 100}}, status_code=400)
     msg_id = _new_wamid()
+    sim.typing_until.pop(p["to"], None)          # the reply replaces "typing…"
     sim.q("INSERT INTO messages (id,wa_id,sender,type,body,status,created_at) VALUES (?,?,?,?,?,?,?)",
           (msg_id, p["to"], "bot", p["type"], json.dumps(p), "delivered", time.time()))
 
@@ -222,6 +230,11 @@ async def api_media(request: Request):
     return Response(Path(rows[0]["path"]).read_bytes(), media_type=rows[0]["mime"])
 
 
+async def api_presence(request: Request):
+    wa_id = request.query_params.get("wa_id", "919999999999")
+    return JSONResponse({"typing": request.app.state.sim.typing_until.get(wa_id, 0) > time.time()})
+
+
 async def home(request: Request):
     return RedirectResponse("/sim/")
 
@@ -235,5 +248,6 @@ routes = [
     Route("/sim/api/reply", api_reply, methods=["POST"]),
     Route("/sim/api/messages", api_messages),
     Route("/sim/api/media/{media_id}", api_media),
-    Mount("/sim", app=StaticFiles(directory=str(STATIC), html=True), name="sim-static"),
+    Route("/sim/api/presence", api_presence),
+    Mount("/sim", app=NoCacheStaticFiles(directory=str(STATIC), html=True), name="sim-static"),
 ]

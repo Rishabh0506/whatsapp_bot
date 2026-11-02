@@ -97,6 +97,8 @@ class ConversationManager:
         await self.diagnose_and_reply(wa_id, [p[1] for p in photos], [p[2] for p in photos], [p[3] for p in photos])
 
     async def diagnose_and_reply(self, wa_id: str, message_ids: list, media_ids: list, images: list[bytes]) -> None:
+        # the user sees "typing…" while the model works (WhatsApp hides it after 25 s or when we reply)
+        await self.client.mark_read(message_ids[-1], typing=True)
         try:
             result = await self.service.diagnose(images)
         except Exception as e:   # noqa: BLE001 - any failure is logged and reported in the chat

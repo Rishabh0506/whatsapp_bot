@@ -84,5 +84,10 @@ def list_message(to: str, body: str, button: str, rows: list[tuple[str, str]], s
                                                    "rows": [{"id": i, "title": t} for i, t in rows]}]}}}
 
 
-def read_receipt(message_id: str) -> dict:
-    return {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
+def read_receipt(message_id: str, typing: bool = False) -> dict:
+    """Blue ticks on the user's message. typing=True also shows "typing…" in the user's chat until the bot
+    replies or 25 seconds pass (Cloud API typing indicator)."""
+    p = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
+    if typing:
+        p["typing_indicator"] = {"type": "text"}
+    return p

@@ -16,6 +16,7 @@ import uvicorn
 from PIL import Image
 
 from app.config import SIM_APP_SECRET, Settings
+from app.debug import build_dashboard
 from app.main import build_app
 
 
@@ -72,8 +73,12 @@ def server(config_dir, tmp_path):
         "app.public_base_url": f"http://127.0.0.1:{port}"})
     app = build_app(settings)
     srv = start_server(app, port)
+    dash_port = free_port()
+    dash = start_server(build_dashboard(app), dash_port)
+    app.state.dashboard_url = f"http://127.0.0.1:{dash_port}"
     yield f"http://127.0.0.1:{port}", app
     srv.should_exit = True
+    dash.should_exit = True
 
 
 def wait_for(fn, timeout=15):
@@ -100,14 +105,20 @@ def test_photos_to_diagnosis_reply(server):
         return bots or None
     bots = wait_for(bot_reply)
     text = bots[0]["body"]["text"]["body"]
-    assert "(2 photos)" in text and "10. Glue Fix Possible:" in text and "Decision:" in text
+    assert text.strip()
+    # the customer never sees field names, scores or decision codes
+    for internal in ("Glue Fix Possible", "Damage Mode", "Decision", "0.", "Test mode", "✅", "⚠️"):
+        assert internal not in text, internal
     assert len(bots) == 1                                            # both photos -> ONE diagnosis
 
-    _, rows = http("GET", f"{base}/debug/api/diagnoses?wa_id={wa}")
+    dash = app.state.dashboard_url
+    _, rows = http("GET", f"{dash}/api/diagnoses?wa_id={wa}")
     diag = json.loads(rows)
     assert len(diag) == 1 and len(diag[0]["media_ids"]) == 2 and diag[0]["status"] == "ok"
+    assert diag[0]["reply"] == text                                  # dashboard shows what the customer was told
+    assert diag[0]["name"] == "Asha"                                 # dashboard shows who sent it
     # photos were re-compressed like WhatsApp and resized for the model
-    st, img = http("GET", f"{base}/debug/media/{diag[0]['media_ids'][0]}")
+    st, img = http("GET", f"{dash}/media/{diag[0]['media_ids'][0]}")
     assert st == 200 and max(Image.open(io.BytesIO(img)).size) == 1600
 
     # read receipts reached the simulator
@@ -123,7 +134,20 @@ def test_text_message_gets_photo_request(server):
     http("POST", f"{base}/sim/api/send", body, headers)
     bots = wait_for(lambda: [r for r in json.loads(http("GET", f"{base}/sim/api/messages?wa_id=919800000002")[1])
                              if r["sender"] == "bot"])
-    assert "only diagnose photos" in bots[0]["body"]["text"]["body"]
+    assert "send a photo" in bots[0]["body"]["text"]["body"]
+
+
+def test_dashboard_is_only_on_its_own_port(server):
+    base, app = server
+    dash = app.state.dashboard_url
+    for path in ("/debug/api/diagnoses", "/debug/api/info", "/api/diagnoses", "/api/info"):
+        assert http("GET", base + path)[0] == 404, path              # nothing internal on the bot's port
+    st, page = http("GET", dash + "/")
+    assert st == 200 and b"Backend dashboard" in page
+    st, info = http("GET", dash + "/api/info")
+    assert st == 200 and json.loads(info)["provider"] == "mock"
+    st, sim = http("GET", base + "/sim/")
+    assert st == 200 and b"Diagnoses" not in sim and b"debug" not in sim.lower()
 
 
 def signed(payload):
@@ -204,3 +228,85 @@ def test_gemini_provider_http(settings, reference, reject):
     assert ("responseSchema" in body["generationConfig"]) == reject
     assert result["fields"]["image_status"]["value"] == "Usable"
     assert result["meta"]["usage"]["total_tokens"] == 15 and result["meta"]["model"] == "gemini-test"
+
+
+def test_bot_shows_typing_like_whatsapp(server):
+    """The Cloud API typing indicator: shown after a read receipt with typing_indicator, gone once the bot replies."""
+    from app.config import SIM_ACCESS_TOKEN, SIM_PHONE_NUMBER_ID
+    from app.whatsapp.payloads import read_receipt, text_message
+    base, app = server
+    wa, msg_id = "919800000009", "wamid.TEST1"
+    app.state.sim.q("INSERT INTO messages (id,wa_id,sender,type,body,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (msg_id, wa, "user", "text", "{}", "sent", time.time()))
+    graph = f"{base}/sim/graph/{SIM_PHONE_NUMBER_ID}/messages"
+    auth = {"Authorization": f"Bearer {SIM_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    presence = lambda: json.loads(http("GET", f"{base}/sim/api/presence?wa_id={wa}")[1])["typing"]  # noqa: E731
+    assert presence() is False
+    http("POST", graph, json.dumps(read_receipt(msg_id, typing=True)).encode(), auth)
+    assert presence() is True
+    http("POST", graph, json.dumps(text_message(wa, "hello")).encode(), auth)
+    assert presence() is False
+
+
+class FakeOpenRouter(BaseHTTPRequestHandler):
+    calls = []
+    reject_json_schema = False
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeOpenRouter.calls.append((self.path, dict(self.headers), body))
+        fmt = body["response_format"]
+        if FakeOpenRouter.reject_json_schema and fmt["type"] == "json_schema":
+            self._send(404, {"error": {"code": 404, "message": "No endpoints found that can handle the requested "
+                                                                "parameters: response_format json_schema"}})
+            return
+        props = fmt["json_schema"]["schema"]["properties"] if fmt["type"] == "json_schema" else None
+        answer = {"visible_evidence": "fake", "observation_note": ""}
+        if props:
+            for k, v in props.items():
+                if k in answer:
+                    continue
+                answer[k] = ({"value": v["properties"]["value"]["enum"][0], "confidence": 0.9} if "value" in v["properties"]
+                             else {"issue_category": "None", "damage_mode": "None", "confidence": 0.9})
+        else:
+            answer["image_status"] = {"value": "Usable", "confidence": 0.9}
+        self._send(200, {"id": "gen-1", "model": body["model"], "provider": "Google AI Studio",
+                         "choices": [{"message": {"role": "assistant", "content": json.dumps(answer)},
+                                      "finish_reason": "stop"}],
+                         "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost": 0.0012,
+                                   "completion_tokens_details": {"reasoning_tokens": 7}}})
+
+    _send = FakeGemini._send
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.mark.parametrize("reject", [False, True])
+def test_openrouter_provider_http(settings, reference, reject):
+    import asyncio
+    from app.core.pipeline import DiagnosisService
+    from app.core.providers.openrouter import OpenRouterProvider
+    port = free_port()
+    srv = HTTPServer(("127.0.0.1", port), FakeOpenRouter)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    FakeOpenRouter.calls, FakeOpenRouter.reject_json_schema = [], reject
+    try:
+        provider = OpenRouterProvider("or-key", "google/gemini-test", f"http://127.0.0.1:{port}/api/v1",
+                                      app_title="Footwear helpline bot")
+        result = asyncio.run(DiagnosisService(settings, reference, provider).diagnose([jpeg((1, 2, 3))]))
+    finally:
+        srv.shutdown()
+    path, headers, body = FakeOpenRouter.calls[-1]
+    headers = {k.lower(): v for k, v in headers.items()}
+    assert path == "/api/v1/chat/completions"
+    assert headers["authorization"] == "Bearer or-key" and headers["x-title"] == "Footwear helpline bot"
+    assert body["model"] == "google/gemini-test" and body["provider"] == {"require_parameters": True}
+    user = body["messages"][1]["content"]
+    assert user[0]["image_url"]["url"].startswith("data:image/jpeg;base64,") and user[-1]["type"] == "text"
+    assert body["response_format"]["type"] == ("json_object" if reject else "json_schema")
+    assert len(FakeOpenRouter.calls) == (2 if reject else 1)        # one fallback when JSON schema is rejected
+    assert result["fields"]["image_status"]["value"] == "Usable"
+    usage = result["meta"]["usage"]
+    assert usage["total_tokens"] == 120 and usage["cost_usd"] == 0.0012 and usage["routed_to"] == "Google AI Studio"
+    assert result["meta"]["provider"] == "openrouter" and result["meta"]["model"] == "google/gemini-test"

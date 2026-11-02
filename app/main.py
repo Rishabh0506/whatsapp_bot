@@ -1,6 +1,7 @@
-"""Builds the web app: WhatsApp webhook + debug API (+ the simulator when channel.mode is 'simulator').
+"""Builds the bot's web app: WhatsApp webhook (+ the simulator when channel.mode is 'simulator').
+The backend dashboard (scores, decisions) is a separate app on its own port; see app/debug.py.
 
-Run:  python run.py        (or: python -m uvicorn app.main:app --port 8000)
+Run:  python run.py        (starts both: bot on app.port, dashboard on dashboard.port)
 """
 from __future__ import annotations
 
@@ -10,7 +11,6 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
-from . import debug
 from .config import Settings, whatsapp_connection
 from .conversation import ConversationManager
 from .core.pipeline import DiagnosisService
@@ -35,7 +35,7 @@ def build_app(settings: Settings | None = None) -> Starlette:
     service = DiagnosisService(settings, reference, make_provider(settings, reference))
     conversations = ConversationManager(settings, storage, WhatsAppClient(conn), service)
 
-    routes = [Route("/health", health), *webhook.routes, *debug.routes]
+    routes = [Route("/health", health), *webhook.routes]
     simulator_on = settings.get("channel.mode", "simulator") == "simulator"
     if simulator_on:
         from .simulator.routes import SimStore

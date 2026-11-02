@@ -7,7 +7,7 @@ Solutions, text/voice/video input and follow-up conversations come later and plu
 ## 1. Principle: the channel is separate from the diagnosis
 
 ```
- Simulator chat page ─┐                                   ┌─ Gemini (now)
+ Simulator chat page ─┐                                   ┌─ Gemini via OpenRouter (now)
  (later: real phone) ─┤                                   ├─ other models (for comparison)
                       ▼                                   │
         ┌──── "WhatsApp" ─────┐      ┌──────── Bot ───────┴──────────────────────────────┐
@@ -23,7 +23,14 @@ The bot only ever speaks the **WhatsApp Cloud API**:
 - replies are sent separately through `POST /{phone-number-id}/messages`, not as the webhook's response;
 - read receipts, sent/delivered statuses, duplicate deliveries and the 24-hour service window are handled.
 
-In simulator mode the server also hosts a **fake Meta API** (`/sim/graph/...`) that behaves the same way.
+- the typing indicator ("typing…") is sent with a read receipt while the model works, as the Cloud API allows.
+
+In simulator mode the server also hosts a **fake Meta API** (`/sim/graph/...`) that behaves the same way,
+plus a chat page laid out like WhatsApp Web that plays the customer's phone.
+
+The bot's internal view (10 fields, confidences, decision, raw output) is a **separate dashboard app on its own
+port** (`dashboard.port`, default 8001, bound to 127.0.0.1; `app/debug.py`). It shares the database but is never
+served on the bot's port, so it stays private when the bot port is made public for Meta's webhook.
 Switching to real WhatsApp = `channel.mode: whatsapp` + the `WHATSAPP_*` values in `.env` + registering the
 webhook URL with Meta. No bot code changes.
 
@@ -37,7 +44,10 @@ webhook URL with Meta. No bot code changes.
    the photo by media ID, and waits `channel.batch_wait_seconds` for more photos of the same item
    (WhatsApp sends each photo as a separate message; spec: several photos of one item = one record).
 4. Diagnosis core (`app/core/pipeline.py`): prepare images → model → validation → rules → result.
-5. Reply composer turns the result into a WhatsApp text message (test mode: the 10 fields + confidence).
+   Before calling the model the bot sends a typing indicator, so the customer sees "typing…".
+5. Reply composer (`app/replies.py`) turns the result into a plain-language WhatsApp text message for the
+   customer (what's wrong and whether glue can fix it, or a request for a better/closer photo). The bot only
+   names things it is confident about. Scores never go to the customer; they are on the dashboard.
 6. WhatsApp client sends it; everything is logged in `data/bot.db`.
 
 ## 3. Components and where to change things
@@ -48,14 +58,23 @@ webhook URL with Meta. No bot code changes.
 | Allowed values | `config/reference/*.xlsx` → `scripts/import_reference.py` → `lists.json`, `universe.json` | update the Lists or Universe |
 | Model instructions | `config/prompts/diagnosis_v1.md` (re-read on every request) | improve the prompt; copy to `diagnosis_v2.md` and set `core.prompt` to version it |
 | Bands, model, timing | `config/settings.yaml` | set final bands from the test plan, switch model |
-| Model provider | `app/core/providers/` | add another model for comparison (implement `diagnose()`, register in `__init__.py`) |
+| Model provider | `app/core/providers/` | `openrouter.py` (default: Gemini through OpenRouter), `gemini.py` (Google AI Studio directly), `mock.py`. Another OpenRouter model = change `openrouter.model`; a different API = a new class registered in `__init__.py` |
 | Validation | `app/core/validation.py` | add consistency checks |
 | Confidence rules | `app/core/rules.py` | change decision logic |
-| Chat wording | `app/replies.py` | replace test-mode replies with consumer wording |
+| Customer wording | `app/replies.py` | change what the customer reads (one place for all replies) |
+| Backend dashboard | `app/debug.py`, `app/dashboard_static/` | change what the team sees about each diagnosis (port 8001) |
+| Simulator chat page | `app/simulator/static/` | change the WhatsApp-Web-like test page (not part of the bot) |
 | Conversation | `app/conversation.py` | follow-up questions, reviewer queue, text/voice handling |
 | Channel | `app/whatsapp/` | (stable — follows Meta's API) |
 
 ## 4. The model output contract
+
+The model is called through **OpenRouter** (`app/core/providers/openrouter.py`, key `OPENROUTER_API_KEY`):
+`POST /chat/completions` with the instructions as the system message, the photos as base64 data URLs, and
+`response_format` = the JSON schema below (`strict`). `provider.require_parameters: true` makes OpenRouter use only
+routes that honour that schema; if none accepts it, the bot retries once in plain JSON mode (validation still
+checks everything). OpenRouter reports tokens, cost and which route served the call; these are stored with the
+diagnosis and shown on the dashboard. Setting `core.provider: gemini` calls Google AI Studio directly instead.
 
 The model is constrained by a JSON schema built from `fields.yaml` (every value must come from its list):
 

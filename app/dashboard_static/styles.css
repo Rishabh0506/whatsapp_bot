@@ -1,0 +1,65 @@
+:root {
+  --bg: #f0f2f5; --panel: #ffffff; --ink: #111b21; --muted: #667781; --line: #e2e6ea;
+  --accent: #00a884; --ok: #1f9d55; --warn: #d68a00; --bad: #d64545; --chip: #f3f5f7;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
+button, input, select { font: inherit; }
+
+.topbar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { font-weight: 650; }
+.tag { font-weight: 500; font-size: 12px; color: var(--muted); background: var(--chip); padding: 2px 8px; border-radius: 99px; margin-left: 6px; }
+.info { margin-left: auto; color: var(--muted); font-size: 12px; }
+@media (max-width: 860px) { .info { margin-left: 0; } }
+
+.page { max-width: 1400px; margin: 16px auto; padding: 0 16px; }
+.page-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 12px; }
+.page-head h2 { font-size: 15px; margin: 0; }
+.hint { color: var(--muted); font-size: 12px; }
+.diagnoses { display: flex; flex-direction: column; gap: 14px; }
+.empty { color: var(--muted); }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.card-head { display: flex; gap: 10px; align-items: center; padding: 10px 12px; background: #fafbfc; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.card-head .thumbs { display: flex; gap: 4px; }
+.card-head .thumbs img { width: 44px; height: 44px; object-fit: cover; border-radius: 5px; cursor: zoom-in; }
+.card-head .title { font-weight: 600; }
+.card-head .who { color: var(--muted); font-size: 12px; }
+.badge { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 99px; }
+.badge.accept { background: #e3f6ea; color: var(--ok); }
+.badge.follow_up, .badge.ask_problem { background: #fff3dc; color: #a26800; }
+.badge.better_photo, .badge.error { background: #fde8e8; color: var(--bad); }
+.card-head .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+.fields { width: 100%; border-collapse: collapse; }
+.fields td { padding: 6px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.fields tr:last-child td { border-bottom: 0; }
+.fields .lbl { color: var(--muted); width: 28%; white-space: nowrap; }
+.fields .lbl .pd { color: var(--accent); font-size: 11px; margin-left: 4px; }
+.fields .val { font-weight: 550; }
+.fields .val .was { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+.fields .conf { width: 34%; }
+.bar { position: relative; height: 8px; background: #edf0f2; border-radius: 99px; overflow: visible; }
+.bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 99px; }
+.bar .mark { position: absolute; top: -3px; width: 1px; height: 14px; background: #9aa5ad; }
+.bar-row { display: flex; gap: 8px; align-items: center; }
+.bar-row .num { font-variant-numeric: tabular-nums; width: 34px; text-align: right; font-size: 12px; }
+.st { font-size: 11px; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.st.accepted { background: #e3f6ea; color: var(--ok); }
+.st.check { background: #fff3dc; color: #a26800; }
+.st.unknown { background: #fde8e8; color: var(--bad); }
+.notes { padding: 10px 12px; border-top: 1px solid var(--line); font-size: 13px; display: grid; gap: 6px; }
+.notes .k { color: var(--muted); font-size: 12px; }
+.warn { color: #a26800; }
+.reply { margin-top: 4px; padding: 8px 10px; background: #f7f8f9; border-left: 3px solid var(--accent); border-radius: 4px; white-space: pre-wrap; }
+details.raw { padding: 0 12px 10px; }
+details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 6px 0; }
+details.raw pre { margin: 0; max-height: 320px; overflow: auto; background: #f7f8f9; padding: 10px; border-radius: 6px; font-size: 12px; }
+.error-text { padding: 10px 12px; color: var(--bad); white-space: pre-wrap; }
+
+@media (max-width: 700px) {
+  .fields .lbl { white-space: normal; }
+  .card-head .sub { margin-left: 0; }
+}
+
+.lightbox { position: fixed; inset: 0; background: #000c; display: grid; place-items: center; z-index: 10; cursor: zoom-out; }
+.lightbox img { max-width: 92vw; max-height: 92vh; }

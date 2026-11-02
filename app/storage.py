@@ -94,7 +94,8 @@ class Storage:
         return cur.lastrowid
 
     def list_diagnoses(self, wa_id: str | None = None, limit: int = 20) -> list[dict]:
-        sql = "SELECT * FROM diagnoses" + (" WHERE wa_id=?" if wa_id else "") + " ORDER BY id DESC LIMIT ?"
+        sql = ("SELECT d.*, s.name FROM diagnoses d LEFT JOIN sessions s ON s.wa_id = d.wa_id"
+               + (" WHERE d.wa_id=?" if wa_id else "") + " ORDER BY d.id DESC LIMIT ?")
         rows = self._all(sql, ((wa_id,) if wa_id else ()) + (limit,))
         for r in rows:
             r["result"] = json.loads(r["result"]) if r["result"] else None

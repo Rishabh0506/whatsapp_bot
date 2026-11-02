@@ -1,232 +1,386 @@
-// WhatsApp simulator page: the left side behaves like the user's phone, the right side shows
-// the bot's internal diagnosis (debug API). No build step, no libraries.
+// WhatsApp simulator, customer side: behaves like the customer's WhatsApp (laid out like WhatsApp Web).
+// It only shows what WhatsApp would show: messages, photos, ticks, and "typing…" when the bot sends a typing
+// indicator. The bot's internal diagnosis is on the backend dashboard (separate port). No build step, no libraries.
 const $ = (id) => document.getElementById(id);
-const state = { waId: "", lastSeq: 0, waitingSince: 0, bands: { accept: 0.8, unknown_below: 0.5 }, fields: {} };
+const DEFAULT_WA = "919999999999";
+const state = {
+  waId: "", lastSeq: 0, lastDay: "", lastSender: "", typing: false,
+  recent: [],            // [{waId, name}] test customers used on this computer
+  pending: [], current: 0, // photos chosen but not sent yet
+};
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const time = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const hhmm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const initials = (name) => (String(name || "").trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2) || "?").toUpperCase();
 
-function load() {
+function dayLabel(t) {
+  const d = new Date(t * 1000), today = new Date();
+  const yest = new Date(); yest.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yest.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
+}
+
+// WhatsApp text formatting: *bold* _italic_ ~strike~ ```mono``` `code`, plus clickable links.
+function formatWhatsApp(raw) {
+  let s = esc(raw);
+  s = s.replace(/```([\s\S]+?)```/g, "<code>$1</code>");
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  const wrap = (mark, tag) => {
+    const m = mark.replace(/[*~]/g, "\\$&");
+    s = s.replace(new RegExp(`(^|[\\s(>])${m}(?=\\S)([^\\n]*?\\S)${m}(?=$|[\\s.,!?:;)<])`, "g"), `$1<${tag}>$2</${tag}>`);
+  };
+  wrap("*", "strong"); wrap("_", "em"); wrap("~", "del");
+  s = s.replace(/(https?:\/\/[^\s<]+[^\s<.,!?:;)])/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+
+const TICK_ONE = '<svg viewBox="0 0 16 11" width="16" height="11"><path fill="currentColor" d="M11.07.65 10.4.1a.4.4 0 0 0-.56.07L4.1 7.3 1.7 5.07a.4.4 0 0 0-.56.02l-.6.64a.4.4 0 0 0 .02.56l3.2 2.98c.17.16.44.14.59-.04L11.14 1.2a.4.4 0 0 0-.07-.56z"/></svg>';
+const TICK_TWO = '<svg viewBox="0 0 16 11" width="16" height="11"><path fill="currentColor" d="M11.07.65 10.4.1a.4.4 0 0 0-.56.07L4.1 7.3 1.7 5.07a.4.4 0 0 0-.56.02l-.6.64a.4.4 0 0 0 .02.56l3.2 2.98c.17.16.44.14.59-.04L11.14 1.2a.4.4 0 0 0-.07-.56zm4 0L14.4.1a.4.4 0 0 0-.56.07L8.1 7.3l-.9-.84-.97 1.13 1.6 1.5c.17.16.44.14.59-.04L15.14 1.2a.4.4 0 0 0-.07-.56z"/></svg>';
+function ticks(status) {
+  if (status === "read") return `<span class="tick read">${TICK_TWO}</span>`;
+  if (status === "delivered") return `<span class="tick">${TICK_TWO}</span>`;
+  return `<span class="tick">${TICK_ONE}</span>`;
+}
+
+// ------------------------------------------------------------------ test customer (who this page is)
+function loadProfile() {
   try {
     const saved = JSON.parse(localStorage.getItem("fwbot-user") || "{}");
-    if (saved.waId) $("waId").value = saved.waId;
-    if (saved.name) $("name").value = saved.name;
-  } catch (e) { /* storage unavailable */ }
-  switchUser();
-}
-function save() {
-  try { localStorage.setItem("fwbot-user", JSON.stringify({ waId: $("waId").value, name: $("name").value })); } catch (e) {}
-}
-function switchUser() {
-  state.waId = $("waId").value.trim() || "919999999999";
-  state.lastSeq = 0;
-  state.waitingSince = 0;
-  lastDiagKey = "";
-  $("thread").innerHTML = "";
-  $("diagnoses").innerHTML = '<p class="empty">Send a photo to see the 10 fields here.</p>';
-  save();
-  pollMessages();
-  pollDiagnoses();
-}
-
-// ------------------------------------------------------------------ chat
-function renderMessage(m) {
-  const b = m.body, el = document.createElement("div");
-  el.className = "msg " + (m.sender === "user" ? "user" : "bot");
-  let html = "";
-  if (m.type === "image") {
-    const media = b.image || {};
-    html += `<img src="/sim/api/media/${esc(media.id)}" alt="photo">`;
-    if (media.caption) html += esc(media.caption);
-  } else if (m.type === "text") {
-    html += esc((b.text || {}).body);
-  } else if (m.type === "interactive") {
-    const it = b.interactive || {};
-    if (m.sender === "user") {
-      const r = it.button_reply || it.list_reply || {};
-      html += esc(r.title);
-    } else {
-      html += esc((it.body || {}).text);
-      const btns = it.type === "button" ? (it.action.buttons || []).map((x) => x.reply)
-        : ((it.action.sections || [])[0] || { rows: [] }).rows;
-      html += `<div class="buttons">${btns.map((x) => `<button data-id="${esc(x.id)}" data-title="${esc(x.title)}" data-kind="${it.type === "button" ? "button_reply" : "list_reply"}">${esc(x.title)}</button>`).join("")}</div>`;
-    }
+    $("waId").value = saved.waId || DEFAULT_WA;
+    $("name").value = saved.name || "Test user";
+    state.recent = JSON.parse(localStorage.getItem("fwbot-recent") || "[]");
+  } catch (e) {
+    $("waId").value = DEFAULT_WA; $("name").value = "Test user";
   }
-  const ticks = m.sender === "user" ? ` <span class="ticks ${m.status === "read" ? "read" : ""}">✓✓</span>` : "";
-  html += `<div class="meta">${time(m.created_at)}${ticks}</div>`;
-  el.innerHTML = html;
-  el.dataset.id = m.id;
-  return el;
+}
+function saveProfile() {
+  const me = { waId: state.waId, name: $("name").value.trim() || "Test user" };
+  state.recent = [me, ...state.recent.filter((r) => r.waId !== me.waId)].slice(0, 12);
+  try {
+    localStorage.setItem("fwbot-user", JSON.stringify(me));
+    localStorage.setItem("fwbot-recent", JSON.stringify(state.recent));
+  } catch (e) { /* storage unavailable */ }
+  renderProfile();
+}
+function renderProfile() {
+  const name = $("name").value.trim() || "Test user";
+  $("me").textContent = initials(name);
+  $("me").title = `Test customer: ${name} (${state.waId})`;
+  $("bigAvatar").textContent = initials(name);
+  $("recent").innerHTML = state.recent.map((r) =>
+    `<li data-wa="${esc(r.waId)}" class="${r.waId === state.waId ? "current" : ""}"><div class="avatar">${esc(initials(r.name))}</div>` +
+    `<div class="who"><div>${esc(r.name)}</div><div>+${esc(r.waId)}</div></div></li>`).join("");
+}
+function switchUser(waId, name) {
+  if (waId !== undefined) $("waId").value = waId;
+  if (name !== undefined) $("name").value = name;
+  state.waId = $("waId").value.replace(/\D/g, "") || DEFAULT_WA;
+  $("waId").value = state.waId;
+  state.lastSeq = 0; state.lastDay = ""; state.lastSender = ""; state.typing = false; stick = true;
+  $("thread").innerHTML = "";
+  setLastMessage(null);
+  setTyping(false);
+  saveProfile();
+  pollMessages();
+}
+function newCustomer() {
+  const n = "91" + String(Math.floor(7000000000 + Math.random() * 2999999999));
+  switchUser(n, "Customer " + n.slice(-4));
+  $("profilePanel").hidden = true;
 }
 
+// ------------------------------------------------------------------ messages
+function bodyOf(m) {
+  const b = m.body || {};
+  if (m.type === "text") return { text: (b.text || {}).body || "" };
+  if (m.type === "image") return { image: (b.image || {}).id, link: (b.image || {}).link, text: (b.image || {}).caption || "" };
+  if (m.type === "interactive") {
+    const it = b.interactive || {};
+    if (m.sender === "user") return { text: (it.button_reply || it.list_reply || {}).title || "" };
+    return { text: (it.body || {}).text || "", interactive: it };
+  }
+  return { text: `[${m.type} message]` };
+}
+
+function renderMessage(m) {
+  const frag = document.createDocumentFragment();
+  const day = dayLabel(m.created_at);
+  if (day !== state.lastDay) {
+    const chip = document.createElement("div");
+    chip.className = "day"; chip.textContent = day;
+    frag.appendChild(chip);
+    state.lastDay = day; state.lastSender = "";
+  }
+  const who = m.sender === "user" ? "user" : "bot";
+  const row = document.createElement("div");
+  row.className = `row ${who}` + (state.lastSender !== who ? " first" : "");
+  row.dataset.id = m.id;
+  state.lastSender = who;
+
+  const c = bodyOf(m);
+  const meta = `<span class="meta">${hhmm(m.created_at)}${who === "user" ? ticks(m.status) : ""}</span>`;
+  let html = "";
+  if (c.image || c.link) {
+    const src = c.image ? `/sim/api/media/${encodeURIComponent(c.image)}` : c.link;
+    html += `<img src="${esc(src)}" alt="Photo">`;
+  }
+  if (c.text) html += `<div class="text">${formatWhatsApp(c.text)}<span class="spacer"></span></div>`;
+  else if (!c.image && !c.link) html += `<div class="text"><span class="spacer"></span></div>`;
+  const actions = c.interactive ? renderActions(c.interactive, m.id) : "";
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble" + ((c.image || c.link) ? " photo" + (c.text ? "" : " bare") : "");
+  bubble.innerHTML = `<div class="content">${html}${meta}</div>${actions}`;
+  bubble.querySelectorAll("img").forEach((img) => img.addEventListener("load", () => { if (stick) scrollDown(); }));
+  row.appendChild(bubble);
+  frag.appendChild(row);
+  return frag;
+}
+
+// reply buttons and list messages, drawn the way WhatsApp draws them under the bubble
+function renderActions(it, msgId) {
+  const act = it.action || {};
+  if (it.type === "button") {
+    return `<div class="actions">${(act.buttons || []).map((x) => x.reply || {}).map((r) =>
+      `<button type="button" data-kind="button_reply" data-id="${esc(r.id)}" data-title="${esc(r.title)}">↩ ${esc(r.title)}</button>`).join("")}</div>`;
+  }
+  if (it.type === "list") {
+    return `<div class="actions"><button type="button" data-list="${esc(msgId)}">☰ ${esc(act.button || "Options")}</button></div>`;
+  }
+  return "";
+}
+
+function setLastMessage(m) {
+  if (!m) { $("lastMsg").textContent = "Send a photo of the footwear that needs fixing"; $("lastTime").textContent = ""; return; }
+  const c = bodyOf(m);
+  const text = (c.image || c.link) ? "📷 " + (c.text || "Photo") : (c.text || "").split("\n").find((l) => l.trim()) || "";
+  $("lastMsg").innerHTML = (m.sender === "user" ? ticks(m.status) : "") + `<span>${esc(text)}</span>`;
+  $("lastTime").textContent = hhmm(m.created_at);
+}
+
+const messages = new Map();   // id -> message, for list sheets and tick updates
+let stick = true;             // keep the newest message in view unless the user scrolled up
+const scrollDown = () => { const t = $("thread"); t.scrollTop = t.scrollHeight; };
+$("thread").addEventListener("scroll", () => {
+  const t = $("thread");
+  stick = t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+});
 async function pollMessages() {
   const wa = state.waId;
   try {
     const r = await fetch(`/sim/api/messages?wa_id=${encodeURIComponent(wa)}&after=${state.lastSeq}`);
     const rows = await r.json();
-    if (wa !== state.waId) return;
+    if (wa !== state.waId || !rows.length) return;
     const thread = $("thread");
-    const typing = thread.querySelector(".typing");
-    if (typing) typing.remove();
     for (const m of rows) {
+      if (m.seq <= state.lastSeq) continue;
+      messages.set(m.id, m);
       thread.appendChild(renderMessage(m));
-      state.lastSeq = Math.max(state.lastSeq, m.seq);
-      if (m.sender === "bot") state.waitingSince = 0;
+      state.lastSeq = m.seq;
     }
-    if (state.waitingSince) {
-      const t = document.createElement("div");
-      t.className = "typing";
-      t.textContent = "Bot is diagnosing…";
-      thread.appendChild(t);
-    }
-    if (rows.length) thread.scrollTop = thread.scrollHeight;
+    setLastMessage(rows[rows.length - 1]);
+    if (stick || rows.some((m) => m.sender === "user")) { stick = true; scrollDown(); }
   } catch (e) { /* server restarting */ }
 }
 
 async function refreshTicks() {
-  // read receipts arrive after a message was rendered; re-fetch the user's recent messages' status
   try {
-    const r = await fetch(`/sim/api/messages?wa_id=${encodeURIComponent(state.waId)}&after=${Math.max(0, state.lastSeq - 20)}`);
-    for (const m of await r.json()) {
-      if (m.sender !== "user" || m.status !== "read") continue;
-      const el = document.querySelector(`.msg[data-id="${CSS.escape(m.id)}"] .ticks`);
-      if (el) el.classList.add("read");
+    const r = await fetch(`/sim/api/messages?wa_id=${encodeURIComponent(state.waId)}&after=${Math.max(0, state.lastSeq - 30)}`);
+    const rows = await r.json();
+    for (const m of rows) {
+      if (m.sender !== "user") continue;
+      messages.set(m.id, m);
+      const el = document.querySelector(`.row[data-id="${CSS.escape(m.id)}"] .meta`);
+      if (el) el.innerHTML = hhmm(m.created_at) + ticks(m.status);
     }
+    if (rows.length) setLastMessage(rows[rows.length - 1]);
+  } catch (e) {}
+}
+
+function setTyping(on) {
+  state.typing = on;
+  $("sub").textContent = on ? "typing…" : "Business account";
+  $("sub").classList.toggle("typing", on);
+  if (on) $("lastMsg").innerHTML = '<span style="color:var(--green-dark)">typing…</span>';
+}
+async function pollPresence() {
+  const wa = state.waId;
+  try {
+    const p = await (await fetch(`/sim/api/presence?wa_id=${encodeURIComponent(wa)}`)).json();
+    if (wa !== state.waId || p.typing === state.typing) return;
+    setTyping(p.typing);
+    if (!p.typing) refreshTicks();
   } catch (e) {}
 }
 
 // ------------------------------------------------------------------ sending
-const pendingFiles = [];
-$("photos").addEventListener("change", (e) => {
-  for (const f of e.target.files) pendingFiles.push(f);
-  e.target.value = "";
-  showPending();
-});
-function showPending() {
-  const box = $("pending");
-  box.hidden = !pendingFiles.length;
-  box.innerHTML = pendingFiles.map((f) => `<img src="${URL.createObjectURL(f)}" title="${esc(f.name)}">`).join("");
-}
-$("composer").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = $("text").value.trim();
-  if (!text && !pendingFiles.length) return;
+async function send(fields, files = []) {
   const fd = new FormData();
   fd.append("wa_id", state.waId);
-  fd.append("name", $("name").value);
-  fd.append("text", text);
-  pendingFiles.forEach((f) => fd.append("photos", f));
-  $("send").disabled = true;
-  try {
-    const r = await fetch("/sim/api/send", { method: "POST", body: fd });
-    if (!r.ok) { alert((await r.json()).error || "Sending failed"); return; }
-    $("text").value = "";
-    pendingFiles.length = 0;
-    showPending();
-    state.waitingSince = Date.now();
-    pollMessages();
-  } finally {
-    $("send").disabled = false;
-  }
+  fd.append("name", $("name").value.trim() || "Test user");
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  files.forEach((f) => fd.append("photos", f));
+  const r = await fetch("/sim/api/send", { method: "POST", body: fd });
+  if (!r.ok) { notice((await r.json().catch(() => ({}))).error || "Sending failed"); return false; }
+  await pollMessages();
+  return true;
+}
+function notice(text) {
+  const n = document.createElement("div");
+  n.className = "notice"; n.textContent = text;
+  $("thread").appendChild(n);
+  $("thread").scrollTop = $("thread").scrollHeight;
+}
+
+const textBox = $("text");
+function autosize() {
+  textBox.style.height = "auto";
+  textBox.style.height = Math.min(textBox.scrollHeight, 140) + "px";
+  $("send").classList.toggle("ready", !!textBox.value.trim());
+}
+textBox.addEventListener("input", autosize);
+textBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
 });
-$("thread").addEventListener("click", async (e) => {
-  const btn = e.target.closest(".buttons button");
-  if (btn) {
-    await fetch("/sim/api/reply", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wa_id: state.waId, name: $("name").value, reply_id: btn.dataset.id, title: btn.dataset.title, kind: btn.dataset.kind }) });
-    pollMessages();
-    return;
+$("composer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = textBox.value.trim();
+  if (!text) return;
+  textBox.value = ""; autosize();
+  if (!(await send({ text }))) { textBox.value = text; autosize(); }
+});
+
+// photo preview (WhatsApp Web asks for a caption before sending photos)
+function addPhotos(files) {
+  const imgs = [...files].filter((f) => f.type.startsWith("image/"));
+  if (!imgs.length) return;
+  imgs.forEach((f) => state.pending.push({ file: f, url: URL.createObjectURL(f) }));
+  state.current = state.pending.length - 1;
+  renderPreview();
+}
+function renderPreview() {
+  const p = state.pending;
+  $("preview").hidden = !p.length;
+  if (!p.length) return;
+  state.current = Math.min(state.current, p.length - 1);
+  $("previewImg").src = p[state.current].url;
+  $("previewName").textContent = p[state.current].file.name;
+  $("previewThumbs").innerHTML = p.map((x, i) =>
+    `<button type="button" data-i="${i}" class="${i === state.current ? "on" : ""}" title="${esc(x.file.name)}">` +
+    `<img src="${x.url}" alt=""><span class="rm" data-rm="${i}">×</span></button>`).join("");
+  $("caption").focus();
+}
+function closePreview() {
+  state.pending.forEach((x) => URL.revokeObjectURL(x.url));
+  state.pending = []; $("caption").value = "";
+  renderPreview();
+}
+$("photos").addEventListener("change", (e) => { addPhotos(e.target.files); e.target.value = ""; });
+$("morePhotos").addEventListener("change", (e) => { addPhotos(e.target.files); e.target.value = ""; });
+$("closePreview").addEventListener("click", closePreview);
+$("previewThumbs").addEventListener("click", (e) => {
+  const rm = e.target.closest("[data-rm]");
+  if (rm) {
+    const [x] = state.pending.splice(+rm.dataset.rm, 1);
+    URL.revokeObjectURL(x.url);
+    if (!state.pending.length) return closePreview();
+    return renderPreview();
   }
+  const b = e.target.closest("button[data-i]");
+  if (b) { state.current = +b.dataset.i; renderPreview(); }
+});
+$("caption").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("sendPhotos").click(); } });
+$("sendPhotos").addEventListener("click", async () => {
+  if (!state.pending.length) return;
+  $("sendPhotos").disabled = true;
+  try {
+    const ok = await send({ text: $("caption").value.trim() }, state.pending.map((x) => x.file));
+    if (ok) closePreview();
+  } finally { $("sendPhotos").disabled = false; }
+});
+
+// drag & drop photos onto the chat
+let dragDepth = 0;
+$("conv").addEventListener("dragenter", (e) => { if ([...e.dataTransfer.types].includes("Files")) { dragDepth++; $("dropHint").hidden = false; } });
+$("conv").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("dropHint").hidden = true; } });
+$("conv").addEventListener("dragover", (e) => e.preventDefault());
+$("conv").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $("dropHint").hidden = true; addPhotos(e.dataTransfer.files); });
+// paste a screenshot / photo
+document.addEventListener("paste", (e) => { if (e.clipboardData && e.clipboardData.files.length) addPhotos(e.clipboardData.files); });
+
+// ------------------------------------------------------------------ taps on bot buttons / lists, photos
+$("thread").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".actions button[data-kind]");
+  if (btn) return reply(btn.dataset.kind, btn.dataset.id, btn.dataset.title);
+  const list = e.target.closest(".actions button[data-list]");
+  if (list) return openList(messages.get(list.dataset.list));
   if (e.target.tagName === "IMG") lightbox(e.target.src);
 });
-$("diagnoses").addEventListener("click", (e) => { if (e.target.tagName === "IMG") lightbox(e.target.src); });
+async function reply(kind, id, title) {
+  await fetch("/sim/api/reply", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wa_id: state.waId, name: $("name").value, reply_id: id, title, kind }) });
+  pollMessages();
+}
+function openList(m) {
+  if (!m) return;
+  const it = m.body.interactive, sheet = $("sheet");
+  const secs = (it.action.sections || []).map((s) => `<div class="sec">${esc(s.title || "")}</div>` +
+    (s.rows || []).map((r) => `<label><input type="radio" name="row" value="${esc(r.id)}" data-title="${esc(r.title)}">` +
+      `<span>${esc(r.title)}${r.description ? `<small>${esc(r.description)}</small>` : ""}</span></label>`).join("")).join("");
+  sheet.innerHTML = `<div class="sheet"><h4>${esc(it.action.button || "Options")}</h4>${secs}` +
+    `<div class="sheet-foot"><button type="button" data-close>Cancel</button><button type="button" class="primary" data-send>Send</button></div></div>`;
+  sheet.hidden = false;
+}
+$("sheet").addEventListener("click", (e) => {
+  const sheet = $("sheet");
+  if (e.target === sheet || e.target.closest("[data-close]")) { sheet.hidden = true; return; }
+  if (e.target.closest("[data-send]")) {
+    const pick = sheet.querySelector("input[name=row]:checked");
+    if (!pick) return;
+    sheet.hidden = true;
+    reply("list_reply", pick.value, pick.dataset.title);
+  }
+});
 function lightbox(src) {
   const d = document.createElement("div");
   d.className = "lightbox";
-  d.innerHTML = `<img src="${esc(src)}">`;
+  d.innerHTML = `<img src="${esc(src)}" alt="">`;
   d.onclick = () => d.remove();
   document.body.appendChild(d);
 }
-$("newUser").addEventListener("click", () => {
-  $("waId").value = "91" + String(Math.floor(7000000000 + Math.random() * 2999999999));
-  switchUser();
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  document.querySelector(".lightbox")?.remove();
+  $("sheet").hidden = true;
+  if (!$("preview").hidden) closePreview();
+  else $("profilePanel").hidden = true;
 });
-$("waId").addEventListener("change", switchUser);
-$("name").addEventListener("change", save);
 
-// ------------------------------------------------------------------ debug panel
-const ACTION = { accept: "Accept", follow_up: "Follow-up needed", better_photo: "Better photo needed", ask_problem: "Ask what the problem is" };
-let lastDiagKey = "";
+// ------------------------------------------------------------------ side panels
+$("me").addEventListener("click", () => { $("profilePanel").hidden = !$("profilePanel").hidden; });
+$("closeProfile").addEventListener("click", () => { $("profilePanel").hidden = true; });
+$("newCustomer").addEventListener("click", newCustomer);
+$("newCustomer2").addEventListener("click", newCustomer);
+$("waId").addEventListener("change", () => switchUser());
+$("name").addEventListener("input", renderProfile);
+$("name").addEventListener("change", saveProfile);
+$("recent").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-wa]");
+  if (!li) return;
+  const r = state.recent.find((x) => x.waId === li.dataset.wa);
+  switchUser(r.waId, r.name);
+});
+$("search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  $("botChat").hidden = !!q && !"footwear helpline".includes(q);
+});
+$("botChat").addEventListener("click", () => $("app").classList.remove("show-list"));
+$("showList").addEventListener("click", () => $("app").classList.add("show-list"));
 
-function bar(conf) {
-  const b = state.bands, pct = Math.round(conf * 100);
-  const color = conf >= b.accept ? "var(--ok)" : conf >= b.unknown_below ? "var(--warn)" : "var(--bad)";
-  return `<div class="bar-row"><div class="bar" style="flex:1"><span style="width:${pct}%;background:${color}"></span>` +
-    `<i class="mark" style="left:${b.unknown_below * 100}%"></i><i class="mark" style="left:${b.accept * 100}%"></i></div>` +
-    `<span class="num">${conf.toFixed(2)}</span></div>`;
-}
-
-function renderDiagnosis(d) {
-  const card = document.createElement("article");
-  card.className = "card";
-  const thumbs = (d.media_ids || []).map((id) => `<img src="/debug/media/${esc(id)}" alt="">`).join("");
-  const when = new Date(d.created_at * 1000).toLocaleString();
-  if (d.status === "error") {
-    card.innerHTML = `<div class="card-head"><div class="thumbs">${thumbs}</div><span class="title">#${d.id}</span>` +
-      `<span class="badge error">Failed</span><span class="sub">${esc(when)}</span></div><div class="error-text">${esc(d.error)}</div>`;
-    return card;
-  }
-  const r = d.result, m = r.meta;
-  const rows = r.order.map((key) => {
-    const f = r.fields[key], pd = state.fields[key] && state.fields[key].product_deciding;
-    const was = f.value !== f.model_value ? `<span class="was">model said: ${esc(f.model_value)}</span>` : "";
-    return `<tr><td class="lbl">${esc(f.label)}${pd ? '<span class="pd" title="Product-deciding field">●</span>' : ""}</td>` +
-      `<td class="val">${esc(f.value)}${was}</td><td class="conf">${bar(f.confidence)}</td>` +
-      `<td><span class="st ${esc(f.status)}">${esc(f.status)}</span></td></tr>`;
-  }).join("");
-  const dec = r.decision;
-  const decText = ACTION[dec.action] + (dec.action === "follow_up" ? ": " + dec.fields.map((k) => r.fields[k].label).join(", ") : "");
-  const warnings = (r.warnings || []).map((w) => `<div class="warn">⚠ ${esc(w.message)}</div>`).join("");
-  const usage = m.usage || {};
-  card.innerHTML =
-    `<div class="card-head"><div class="thumbs">${thumbs}</div><span class="title">#${d.id}</span>` +
-    `<span class="badge ${esc(dec.action)}">${esc(decText)}</span>` +
-    `<span class="sub">${esc(m.model)} · ${esc(m.prompt_version)} · ${(m.latency_ms / 1000).toFixed(1)}s` +
-    (usage.total_tokens ? ` · ${usage.total_tokens} tokens` : "") + ` · ${esc(when)}</span></div>` +
-    `<table class="fields">${rows}</table>` +
-    `<div class="notes"><div><span class="k">What the model saw:</span> ${esc(r.visible_evidence) || "—"}</div>` +
-    `<div><span class="k">Observation note:</span> ${esc(r.observation_note) || "—"}</div>` +
-    `<div><span class="k">Decision rule:</span> ${esc(dec.reason)}</div>${warnings}</div>` +
-    `<details class="raw"><summary>Raw model output</summary><pre>${esc(prettyJson(r.raw_model_output))}</pre></details>`;
-  return card;
-}
-function prettyJson(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; } }
-
-async function pollDiagnoses() {
-  const wa = state.waId;
-  try {
-    const r = await fetch(`/debug/api/diagnoses?wa_id=${encodeURIComponent(wa)}&limit=30`);
-    const rows = await r.json();
-    if (wa !== state.waId) return;
-    const key = rows.map((x) => x.id).join(",");
-    if (key === lastDiagKey) return;
-    lastDiagKey = key;
-    const box = $("diagnoses");
-    box.innerHTML = rows.length ? "" : '<p class="empty">Send a photo to see the 10 fields here.</p>';
-    rows.forEach((d) => box.appendChild(renderDiagnosis(d)));
-  } catch (e) {}
-}
-
-async function loadInfo() {
-  try {
-    const i = await (await fetch("/debug/api/info")).json();
-    state.bands = i.bands;
-    i.fields.forEach((f) => (state.fields[f.key] = f));
-    $("info").textContent = `${i.provider} · ${i.model} · prompt ${i.prompt} · bands ${i.bands.unknown_below} / ${i.bands.accept}`;
-  } catch (e) {}
-}
-
-loadInfo().then(load);
+// ------------------------------------------------------------------ start
+loadProfile();
+switchUser();
 setInterval(pollMessages, 1200);
-setInterval(pollDiagnoses, 2000);
-setInterval(refreshTicks, 4000);
+setInterval(pollPresence, 1000);
+setInterval(refreshTicks, 3000);

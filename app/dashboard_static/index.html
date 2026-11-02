@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Footwear Bot Dashboard</title>
+<link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Footwear bot <span class="tag">Backend dashboard</span></div>
+  <div id="info" class="info"></div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h2>Latest diagnosis</h2>
+    <span class="hint">What the bot decided for the most recent photo. Customers never see this page.
+      Older diagnoses are kept in data/bot.db.</span>
+  </div>
+  <div id="diagnoses" class="diagnoses"><p class="empty">Loading…</p></div>
+</main>
+<script src="dashboard.js?v=4"></script>
+</body>
+</html>

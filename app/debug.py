@@ -1,18 +1,37 @@
-"""Debug API for the test interface: the bot's internal view (fields, confidences, decisions).
-Channel-independent: works the same in simulator and real WhatsApp mode."""
+"""Backend dashboard: the bot's internal view (fields, confidences, decisions, raw model output).
+
+Served on its own port (dashboard.port in settings, default 8001), never on the public bot port, so customers
+and the internet can't reach it even when the bot port is exposed for real WhatsApp.
+Channel-independent: works the same in simulator and real WhatsApp mode.
+
+  GET /                     the dashboard page
+  GET /api/diagnoses        newest first; ?limit=<n> (the page asks for 1) &wa_id=<number> (optional)
+  GET /api/info             provider, model, prompt, bands, fields
+  GET /media/{media_id}     a stored photo
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+
+from . import replies
+from .static import NoCacheStaticFiles
+
+STATIC = Path(__file__).parent / "dashboard_static"
+SHARED_STATE = ("settings", "reference", "storage", "service")
 
 
 async def diagnoses(request: Request):
     wa_id = request.query_params.get("wa_id") or None
-    limit = min(int(request.query_params.get("limit", 20)), 200)
-    return JSONResponse(request.app.state.storage.list_diagnoses(wa_id, limit))
+    limit = min(int(request.query_params.get("limit", 30)), 200)
+    rows = request.app.state.storage.list_diagnoses(wa_id, limit)
+    for r in rows:   # what the customer reads in the chat for this diagnosis (current wording in replies.py)
+        r["reply"] = replies.diagnosis(r["result"], r["id"]) if r["result"] else replies.error(Exception())
+    return JSONResponse(rows)
 
 
 async def info(request: Request):
@@ -38,7 +57,16 @@ async def media(request: Request):
 
 
 routes = [
-    Route("/debug/api/diagnoses", diagnoses),
-    Route("/debug/api/info", info),
-    Route("/debug/media/{media_id}", media),
+    Route("/api/diagnoses", diagnoses),
+    Route("/api/info", info),
+    Route("/media/{media_id}", media),
+    Mount("/", app=NoCacheStaticFiles(directory=str(STATIC), html=True), name="dashboard-static"),
 ]
+
+
+def build_dashboard(bot_app: Starlette) -> Starlette:
+    """A second web app that shares the bot's storage and settings (same process, same database)."""
+    app = Starlette(routes=routes)
+    for name in SHARED_STATE:
+        setattr(app.state, name, getattr(bot_app.state, name))
+    return app
