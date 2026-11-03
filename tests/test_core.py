@@ -58,6 +58,8 @@ def test_fields_and_schema(reference):
 def test_prompt_renders(config_dir, reference):
     text, version = load_prompt(config_dir, "diagnosis_v1", reference)
     assert version == "diagnosis_v1" and "{{" not in text
+    text2, version2 = load_prompt(config_dir, "diagnosis_v2", reference)
+    assert version2 == "diagnosis_v2" and "{{" not in text2 and "Hinglish" in text2
     assert "Sole Separation - Partial  [Breakage / Crack / Gaps]" in text
     assert "EVA: Ethylene-Vinyl Acetate" in text
 
@@ -79,6 +81,19 @@ def test_bands_and_follow_up(reference):
     assert fields["footwear_type"]["value"] == "Unknown"
     # Footwear Type never blocks; the two substrates do
     assert d["action"] == "follow_up" and d["fields"] == ["receiving_substrate", "applied_substrate"]
+
+
+def test_clear_cobbler_case_needs_no_follow_up(reference):
+    # placeholder rule until the cobbler rules arrive: a confident "No" for weight-bearing / material / surface
+    fields, _, _ = normalize(answer(glue_fix_possible={"value": "No – Weight-Bearing Part", "confidence": 0.9},
+                                    receiving_substrate={"value": "Leather", "confidence": 0.3}), reference)
+    assert apply_rules(fields, reference, 0.8, 0.5)["action"] == "cobbler"
+    # not confident about the glue answer -> no cobbler shortcut
+    fields, _, _ = normalize(answer(glue_fix_possible={"value": "No – Weight-Bearing Part", "confidence": 0.6}), reference)
+    assert apply_rules(fields, reference, 0.8, 0.5)["action"] == "follow_up"
+    # "not a glue problem" is cleaning / care, not a cobbler case
+    fields, _, _ = normalize(answer(glue_fix_possible={"value": "No – Not a Glue Problem", "confidence": 0.9}), reference)
+    assert apply_rules(fields, reference, 0.8, 0.5)["action"] == "accept"
 
 
 def test_image_status_decisions(reference):
@@ -117,7 +132,7 @@ def test_pipeline_with_mock(settings, reference):
     r2 = asyncio.run(service.diagnose([jpeg(), jpeg((10, 10, 10))]))
     assert r1["fields"] == r2["fields"]                      # mock is repeatable
     assert r1["meta"]["image_count"] == 2 and len(r1["order"]) == 10
-    assert r1["decision"]["action"] in ("accept", "follow_up", "better_photo", "ask_problem")
+    assert r1["decision"]["action"] in ("accept", "follow_up", "better_photo", "ask_problem", "cobbler")
 
 
 def test_gemini_request_and_parse(reference):
@@ -173,6 +188,38 @@ def test_reply_other_decisions():
     assert "secret" not in replies.error(RuntimeError("secret detail"))
 
 
+def test_replies_in_hindi():
+    from app import replies
+    dev = lambda t: any("\u0900" <= ch <= "\u097F" for ch in t)  # noqa: E731
+    for action, extra in (("accept", {}), ("cobbler", {"glue_fix_possible": "No – Weight-Bearing Part"}),
+                          ("better_photo", {"image_status": "Blurry"}), ("ask_problem", {}), ("follow_up", {})):
+        text = replies.diagnosis(_result(action, **extra), "hi")
+        assert dev(text) and "Glue" not in text and "0.9" not in text, action
+    assert "आपके फ़ॉर्मल जूतों में" in replies.diagnosis(_result("accept"), "hi")
+    assert "मोची" in replies.diagnosis(_result("cobbler", glue_fix_possible="No – Weight-Bearing Part"), "hi")
+    # every damage mode and glue answer has a Hindi version
+    assert set(replies.DAMAGE_HI) == set(replies.DAMAGE) and set(replies.GLUE_HI) == set(replies.GLUE)
+    # before a language is chosen, messages go out in both languages
+    both = replies.closing(None)
+    assert "closing this chat" in both and dev(both)
+    assert not dev(replies.closing("en")) and "closing" not in replies.closing("hi")
+
+
+def test_greetings_and_language_words():
+    from app.language import is_greeting, language_choice
+    for g in ("hi", "Hi!", "HIII", "hello", "Hey 👋", "namaste", "नमस्ते", "  hii  "):
+        assert is_greeting(g), g
+    for t in ("hi, my strap is broken", "high heels", "hindi", "this", ""):
+        assert not is_greeting(t), t
+    assert language_choice("Hindi") == "hi" and language_choice("हिंदी") == "hi" and language_choice("english.") == "en"
+    assert language_choice("I don't understand Hindi well") is None
+    assert language_choice("", "lang_hi") == "hi" and language_choice("whatever", "lang_en") == "en"
+    from app.language import change_language_request
+    assert change_language_request("Language") == "en" and change_language_request("language?") == "en"
+    assert change_language_request("भाषा") == "hi" and change_language_request("bhasha") == "hi"
+    assert change_language_request("which language is this") is None and change_language_request("hindi") is None
+
+
 # ---------------------------------------------------------------- OpenRouter
 def test_openrouter_request_and_parse(reference):
     from app.core.providers.base import ImageInput
@@ -185,6 +232,9 @@ def test_openrouter_request_and_parse(reference):
     assert body["messages"][1]["content"][0]["image_url"]["url"] == "data:image/jpeg;base64,YWJj"
     assert body["response_format"]["json_schema"]["schema"] == schema and body["response_format"]["json_schema"]["strict"]
     assert body["temperature"] == 0.1 and body["reasoning"] == {"effort": "low"}
+    assert "customer also wrote" not in body["messages"][1]["content"][-1]["text"]
+    with_text = o.build_request([ImageInput(b"abc")], "do it", schema, "json_schema", "sole niche se nikal gaya")
+    assert "<<<\nsole niche se nikal gaya\n>>>" in with_text["messages"][1]["content"][-1]["text"]
     # extra routing settings are merged, not replacing "only providers that honour the schema"
     assert body["provider"] == {"require_parameters": True, "order": ["google-ai-studio"]}
     resp = {"model": "google/gemini-x", "choices": [{"message": {"content": "```json\n" + json.dumps(answer()) + "\n```"},

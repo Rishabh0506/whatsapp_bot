@@ -29,17 +29,19 @@ Check all three against the change every time, even if one ends up needing nothi
   was checked.
 
 ## Principles of this project (keep them true)
-- **Phase 1 scope:** footwear only, photos only. Solutions/products, text/voice/video and follow-up
-  conversations come later and must fit the existing structure (see DESIGN.md section 7).
+- **Phase 1 scope:** footwear only; photos plus typed text, English and Hindi, following the agreed customer
+  journey in `docs/USER_JOURNEY.md` (don't change its rules without asking). Solutions/products, cobbler rules,
+  voice/video and a reviewer come later and must fit the existing structure (see DESIGN.md section 7).
 - **The backend speaks the real WhatsApp Cloud API.** The simulator (port 8000, `app/simulator/`) is only a
   stand-in for Meta's servers and the customer's phone. Never add bot behaviour that works only in the
   simulator. Anything the bot does must be something real WhatsApp supports, so switching to WhatsApp stays a
   settings change (`channel.mode: whatsapp` + `.env`), not a redesign.
-- **Customers never see scores, field names or decision codes.** All customer wording lives in `app/replies.py`.
-  The bot only tells the customer things it is confident about.
+- **Customers never see scores, field names or decision codes.** All customer wording lives in `app/replies.py`,
+  in English and Hindi (Hindi letters); change both. The bot only tells the customer things it is confident about.
 - **Internal data is only on the backend dashboard** (port 8001, `app/debug.py`, `app/dashboard_static/`),
   bound to 127.0.0.1. Never serve it on the bot's port 8000, which becomes public with real WhatsApp. The
-  dashboard shows only the latest diagnosis; the full history stays in `data/bot.db` for model evaluation.
+  dashboard shows only the latest diagnosis. Closed conversations are kept or deleted per
+  `records.keep_after_close` (kept while testing, deleted for real customers); model cost numbers are always kept.
 - **`config/fields.yaml` drives the 10 fields** (prompt, output schema, validation, rules, dashboard). Allowed
   values come from the workbooks in `config/reference/` via `scripts/import_reference.py`.
 - **Model calls go through OpenRouter** (`core.provider: openrouter`, key `OPENROUTER_API_KEY`, model id like

@@ -23,9 +23,30 @@ channel:
   # within this many seconds of each other are treated as one item (spec: several photos = one record).
   batch_wait_seconds: 6
 
+conversation:
+  # The customer journey (docs/USER_JOURNEY.md).
+  # A conversation closes when the customer sends nothing for this long after the bot's real reply
+  # (an answer or a question; "Got it, taking a look…" does not count). The bot then sends a closing message
+  # and forgets the conversation and the language.
+  close_after_seconds: 300
+  check_every_seconds: 15         # how often the bot looks for conversations to close
+  # Tries per conversation: every diagnosis (photo, or text-only retry) and every voice note / video counts.
+  # After the last try without an answer: "please try again with a clear picture" and the conversation closes.
+  max_tries: 3
+  # A message that is ONLY one of these starts a fresh conversation (stretched forms like "hiiii" also count).
+  greetings: [hi, hii, hiii, hello, helo, hlo, hey, heyy, hai, namaste, namaskar, नमस्ते, नमस्कार]
+
+records:
+  # What happens to a conversation's photos, messages and diagnoses when it closes:
+  #   auto  = keep them in simulator mode (testing), delete them in whatsapp mode (real customers)
+  #   true  = always keep (one case per conversation in data/bot.db)
+  #   false = always delete
+  # The cost of each model call (tokens, cost, model; no customer data) is always kept in usage_log.
+  keep_after_close: auto
+
 core:
   provider: openrouter            # openrouter | gemini (Google AI Studio directly) | mock (fake answers, no key)
-  prompt: diagnosis_v1            # file in config/prompts/ (read on every request, so edits apply at once)
+  prompt: diagnosis_v2            # file in config/prompts/ (read on every request, so edits apply at once)
   max_image_side: 1600            # images are resized to this many pixels on the long side before the model sees them
   max_images_per_item: 5
 

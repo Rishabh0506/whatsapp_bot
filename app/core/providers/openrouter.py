@@ -2,7 +2,7 @@
 JSON output. One OPENROUTER_API_KEY gives access to many models, so comparing models later is a settings change.
 
 Request:  POST {api_base}/chat/completions
-          system message = instructions; user message = the photos (base64 data URLs) + one line of text;
+          system message = instructions; user message = the photos (base64 data URLs) + one line of text (+ the customer's own words, if any);
           response_format = the JSON schema built from fields.yaml (values must come from the allowed lists).
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import logging
 import random
 
 from ... import http
-from .base import ImageInput, Provider, ProviderError, ProviderOutput
+from .base import ImageInput, Provider, ProviderError, ProviderOutput, user_text
 
 log = logging.getLogger("openrouter")
 
@@ -41,13 +41,13 @@ class OpenRouterProvider(Provider):
         self.extra = extra or {}
         self.schema_mode = "json_schema"     # falls back to "json_object" if the route rejects JSON schemas
 
-    def build_request(self, images: list[ImageInput], instructions: str, schema: dict, schema_mode: str) -> dict:
+    def build_request(self, images: list[ImageInput], instructions: str, schema: dict, schema_mode: str,
+                      text: str = "") -> dict:
         n = len(images)
         content = [{"type": "image_url",
                     "image_url": {"url": f"data:{im.mime};base64,{base64.b64encode(im.data).decode('ascii')}"}}
                    for im in images]
-        content.append({"type": "text",
-                        "text": f"Diagnose the footwear item shown in the {n} photo{'s' if n > 1 else ''} above."})
+        content.append({"type": "text", "text": user_text(n, text)})
         if schema_mode == "json_object":
             fmt = {"type": "json_object"}
         else:
@@ -119,13 +119,14 @@ class OpenRouterProvider(Provider):
         raise ProviderError(f"OpenRouter API error {r.status}: {msg[:600]}",
                             retryable=r.status in RETRYABLE, status=r.status)
 
-    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict) -> ProviderOutput:
+    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict,
+                       text: str = "") -> ProviderOutput:
         attempt = 0
         while True:
             try:
-                data = await self._call(self.build_request(images, instructions, schema, self.schema_mode))
-                text, out = self.parse_response(data)
-                return ProviderOutput(out["parsed"], text, self.model, out["usage"])
+                data = await self._call(self.build_request(images, instructions, schema, self.schema_mode, text))
+                raw, out = self.parse_response(data)
+                return ProviderOutput(out["parsed"], raw, self.model, out["usage"])
             except ProviderError as e:
                 # If no route accepts a JSON schema, fall back once to plain JSON mode; validation still checks it.
                 low = str(e).lower()

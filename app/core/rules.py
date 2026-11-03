@@ -9,6 +9,15 @@ ACCEPTED, CHECK, LOW = "accepted", "check", "unknown"
 # Image Status values that mean "this photo can't be used"
 BETTER_PHOTO = {"Blurry", "Not Footwear", "More Than One Item"}
 
+# PLACEHOLDER until the team's "too extensive" / cobbler rules arrive: a confident Glue Fix Possible "No" for one
+# of these reasons is treated as a clear cobbler case. The rules will replace is_cobbler_case().
+COBBLER_GLUE = {"No – Weight-Bearing Part", "No – Material Destroyed", "No – Surface Glue Cannot Hold"}
+
+
+def is_cobbler_case(fields: dict) -> bool:
+    glue = fields.get("glue_fix_possible") or {}
+    return glue.get("status") == ACCEPTED and glue.get("value") in COBBLER_GLUE
+
 
 def apply_rules(fields: dict, ref: Reference, accept: float, unknown_below: float) -> dict:
     """Sets each field's status (and Unknown below the lower band). Returns the decision."""
@@ -32,6 +41,12 @@ def apply_rules(fields: dict, ref: Reference, accept: float, unknown_below: floa
         # spec section 5: photo shows no damage and there is no text -> ask what the problem is
         return {"action": "ask_problem", "fields": ["image_status"],
                 "reason": "No damage visible in the photo"}
+
+    if is_cobbler_case(fields):
+        # a clear cobbler case needs no follow-up questions, even if smaller details (e.g. material) are unsure
+        return {"action": "cobbler", "fields": ["glue_fix_possible"],
+                "reason": f"Clear cobbler case (placeholder rule): Glue Fix Possible is "
+                          f"{fields['glue_fix_possible']['value']}"}
 
     pending = [f.key for f in ref.fields if f.product_deciding and fields[f.key]["status"] != ACCEPTED]
     if pending:

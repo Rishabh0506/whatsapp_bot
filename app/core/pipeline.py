@@ -1,8 +1,8 @@
 """The diagnosis core: photos in -> 10 fields + confidence + decision out.
 It knows nothing about WhatsApp or any other channel, so every channel reuses it unchanged.
 
-Steps: prepare images -> model -> validate -> rules. Later steps (solution selection, text and
-voice input, follow-up questions) are added here without touching the existing ones."""
+Steps: prepare images (+ the customer's text) -> model -> validate -> rules. Later steps (solution selection,
+voice input) are added here without touching the existing ones."""
 from __future__ import annotations
 
 import logging
@@ -26,15 +26,16 @@ class DiagnosisService:
         self.provider = provider
         self.schema = build_schema(reference.fields)
 
-    async def diagnose(self, images: list[bytes]) -> dict:
-        """Returns a result dict. Raises ProviderError if the model call fails."""
+    async def diagnose(self, images: list[bytes], text: str = "") -> dict:
+        """Returns a result dict. Raises ProviderError if the model call fails.
+        text: what the customer wrote about the problem (any language), given to the model with the photos."""
         s = self.settings
         max_images = s.get("core.max_images_per_item", 5)
         prepared = [ImageInput(prepare_image(b, s.get("core.max_image_side", 1600))) for b in images[:max_images]]
         instructions, prompt_version = load_prompt(s.config_dir, s.get("core.prompt", "diagnosis_v1"), self.ref)
 
         started = time.perf_counter()
-        out = await self.provider.diagnose(prepared, instructions, self.schema)
+        out = await self.provider.diagnose(prepared, instructions, self.schema, text=text.strip())
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         fields, warnings, extras = normalize(out.parsed, self.ref)
@@ -52,6 +53,7 @@ class DiagnosisService:
             "meta": {
                 "provider": self.provider.name, "model": out.model, "prompt_version": prompt_version,
                 "latency_ms": latency_ms, "usage": out.usage, "image_count": len(prepared),
+                "customer_text": text.strip(),
                 "bands": {"accept": accept, "unknown_below": unknown_below},
             },
             "raw_model_output": out.raw_text,

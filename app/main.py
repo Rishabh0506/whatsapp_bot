@@ -6,6 +6,7 @@ Run:  python run.py        (starts both: bot on app.port, dashboard on dashboard
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -42,7 +43,13 @@ def build_app(settings: Settings | None = None) -> Starlette:
         from .simulator.routes import routes as sim_routes
         routes += sim_routes
 
-    app = Starlette(routes=routes)
+    @asynccontextmanager
+    async def lifespan(app):
+        conversations.start()          # regular check that closes quiet conversations (5-minute rule)
+        yield
+        await conversations.stop()
+
+    app = Starlette(routes=routes, lifespan=lifespan)
     app.state.settings = settings
     app.state.reference = reference
     app.state.storage = storage

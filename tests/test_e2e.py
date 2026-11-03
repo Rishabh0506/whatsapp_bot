@@ -91,6 +91,22 @@ def wait_for(fn, timeout=15):
     raise AssertionError("timed out")
 
 
+def bot_messages(base, wa):
+    _, rows = http("GET", f"{base}/sim/api/messages?wa_id={wa}")
+    return [r for r in json.loads(rows) if r["sender"] == "bot"]
+
+
+def body_text(m):
+    b = m["body"]
+    return b["text"]["body"] if m["type"] == "text" else b["interactive"]["body"]["text"]
+
+
+def tap(base, wa, reply_id, title, name="Asha"):
+    http("POST", f"{base}/sim/api/reply",
+         json.dumps({"wa_id": wa, "name": name, "reply_id": reply_id, "title": title}).encode(),
+         {"Content-Type": "application/json"})
+
+
 def test_photos_to_diagnosis_reply(server):
     base, app = server
     wa = "919800000001"
@@ -99,17 +115,22 @@ def test_photos_to_diagnosis_reply(server):
     st, res = http("POST", f"{base}/sim/api/send", body, headers)
     assert st == 200 and len(json.loads(res)["sent"]) == 2
 
-    def bot_reply():
-        _, rows = http("GET", f"{base}/sim/api/messages?wa_id={wa}")
-        bots = [r for r in json.loads(rows) if r["sender"] == "bot"]
-        return bots or None
-    bots = wait_for(bot_reply)
-    text = bots[0]["body"]["text"]["body"]
+    # first the language question, with two reply buttons (the photos are kept)
+    bots = wait_for(lambda: bot_messages(base, wa))
+    assert len(bots) == 1 and bots[0]["type"] == "interactive"
+    buttons = bots[0]["body"]["interactive"]["action"]["buttons"]
+    assert [b["reply"]["title"] for b in buttons] == ["English", "हिंदी"]
+
+    tap(base, wa, "lang_en", "English")
+    bots = wait_for(lambda: (lambda b: b if len(b) >= 3 else None)(bot_messages(base, wa)))
+    assert "taking a look" in body_text(bots[1])                     # please-wait message
+    text = body_text(bots[2])
     assert text.strip()
     # the customer never sees field names, scores or decision codes
     for internal in ("Glue Fix Possible", "Damage Mode", "Decision", "0.", "Test mode", "✅", "⚠️"):
         assert internal not in text, internal
-    assert len(bots) == 1                                            # both photos -> ONE diagnosis
+    time.sleep(0.5)
+    assert len(bot_messages(base, wa)) == 3                          # both photos -> ONE diagnosis
 
     dash = app.state.dashboard_url
     _, rows = http("GET", f"{dash}/api/diagnoses?wa_id={wa}")
@@ -117,6 +138,8 @@ def test_photos_to_diagnosis_reply(server):
     assert len(diag) == 1 and len(diag[0]["media_ids"]) == 2 and diag[0]["status"] == "ok"
     assert diag[0]["reply"] == text                                  # dashboard shows what the customer was told
     assert diag[0]["name"] == "Asha"                                 # dashboard shows who sent it
+    assert diag[0]["try_no"] == 1 and diag[0]["lang"] == "en" and diag[0]["conversation_open"]
+    assert diag[0]["customer_text"] == "sole coming off"             # the caption went to the model
     # photos were re-compressed like WhatsApp and resized for the model
     st, img = http("GET", f"{dash}/media/{diag[0]['media_ids'][0]}")
     assert st == 200 and max(Image.open(io.BytesIO(img)).size) == 1600
@@ -128,13 +151,32 @@ def test_photos_to_diagnosis_reply(server):
     wait_for(lambda: app.state.storage._all("SELECT * FROM statuses WHERE status='delivered'"))
 
 
-def test_text_message_gets_photo_request(server):
+def test_text_message_gets_language_then_photo_request(server):
     base, _ = server
-    body, headers = multipart({"wa_id": "919800000002", "text": "hello"}, [])
+    wa = "919800000002"
+    body, headers = multipart({"wa_id": wa, "text": "my sole broke"}, [])
     http("POST", f"{base}/sim/api/send", body, headers)
-    bots = wait_for(lambda: [r for r in json.loads(http("GET", f"{base}/sim/api/messages?wa_id=919800000002")[1])
-                             if r["sender"] == "bot"])
-    assert "send a photo" in bots[0]["body"]["text"]["body"]
+    bots = wait_for(lambda: bot_messages(base, wa))
+    assert bots[0]["type"] == "interactive"
+    tap(base, wa, "lang_hi", "हिंदी")
+    bots = wait_for(lambda: (lambda b: b if len(b) >= 2 else None)(bot_messages(base, wa)))
+    assert "फ़ोटो भेजें" in body_text(bots[1])
+
+
+def test_voice_note_from_the_simulator(server):
+    base, app = server
+    wa = "919800000004"
+    tap(base, wa, "lang_en", "English")
+    wait_for(lambda: bot_messages(base, wa))
+    body, headers = multipart({"wa_id": wa}, [("photos", "note.ogg", b"OggS fake audio")])
+    body = body.replace(b"Content-Type: image/jpeg", b"Content-Type: audio/ogg")
+    st, res = http("POST", f"{base}/sim/api/send", body, headers)
+    assert st == 200
+    _, rows = http("GET", f"{base}/sim/api/messages?wa_id={wa}")
+    assert [r["type"] for r in json.loads(rows) if r["sender"] == "user"][-1] == "audio"
+    bots = wait_for(lambda: (lambda b: b if len(b) >= 2 else None)(bot_messages(base, wa)))
+    assert "voice notes" in body_text(bots[-1])
+    assert app.state.conversations._load(wa).tries == 1
 
 
 def test_dashboard_is_only_on_its_own_port(server):

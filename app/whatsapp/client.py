@@ -45,6 +45,11 @@ class WhatsAppClient:
         res = await self.send(payloads.text_message(to, body))
         return (res.get("messages") or [{}])[0].get("id", "")
 
+    async def send_buttons(self, to: str, body: str, buttons: list[tuple[str, str]]) -> str:
+        """A message with reply buttons (up to 3). The tap comes back as an 'interactive' message."""
+        res = await self.send(payloads.buttons_message(to, body, buttons))
+        return (res.get("messages") or [{}])[0].get("id", "")
+
     async def mark_read(self, message_id: str, typing: bool = False) -> None:
         try:
             await self.send(payloads.read_receipt(message_id, typing))

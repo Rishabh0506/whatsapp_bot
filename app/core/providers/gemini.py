@@ -9,7 +9,7 @@ import random
 
 from ... import http
 from ..prompt import to_openapi_schema
-from .base import ImageInput, Provider, ProviderError, ProviderOutput
+from .base import ImageInput, Provider, ProviderError, ProviderOutput, user_text
 
 log = logging.getLogger("gemini")
 
@@ -30,11 +30,12 @@ class GeminiProvider(Provider):
         self.max_retries = max_retries
         self.extra = generation_config_extra or {}
 
-    def build_request(self, images: list[ImageInput], instructions: str, schema: dict, schema_mode: str) -> dict:
+    def build_request(self, images: list[ImageInput], instructions: str, schema: dict, schema_mode: str,
+                      text: str = "") -> dict:
         parts = [{"inlineData": {"mimeType": im.mime, "data": base64.b64encode(im.data).decode("ascii")}}
                  for im in images]
         n = len(images)
-        parts.append({"text": f"Diagnose the footwear item shown in the {n} photo{'s' if n > 1 else ''} above."})
+        parts.append({"text": user_text(n, text)})
         gen = {"responseMimeType": "application/json"}
         if schema_mode == "openapi":
             gen["responseSchema"] = to_openapi_schema(schema)
@@ -82,14 +83,15 @@ class GeminiProvider(Provider):
         raise ProviderError(f"Gemini API error {r.status}: {msg[:500]}",
                             retryable=r.status in (429, 500, 502, 503, 504), status=r.status)
 
-    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict) -> ProviderOutput:
+    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict,
+                       text: str = "") -> ProviderOutput:
         mode = self.schema_mode
         attempt = 0
         while True:
             try:
-                data = await self._call(self.build_request(images, instructions, schema, mode))
-                text, out = self.parse_response(data)
-                return ProviderOutput(out["parsed"], text, self.model, out["usage"])
+                data = await self._call(self.build_request(images, instructions, schema, mode, text))
+                raw, out = self.parse_response(data)
+                return ProviderOutput(out["parsed"], raw, self.model, out["usage"])
             except ProviderError as e:
                 # Some models/API versions reject responseJsonSchema: fall back to responseSchema once.
                 if e.status == 400 and mode == "json_schema" and "responseJsonSchema" in str(e):

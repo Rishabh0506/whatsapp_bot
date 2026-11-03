@@ -17,7 +17,8 @@ class MockProvider(Provider):
     def __init__(self, reference: Reference):
         self.ref = reference
 
-    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict) -> ProviderOutput:
+    async def diagnose(self, images: list[ImageInput], instructions: str, schema: dict,
+                       text: str = "") -> ProviderOutput:
         seed = hashlib.sha256(b"".join(im.data for im in images)).hexdigest()
         rnd = random.Random(seed)
         row = rnd.choice(self.ref.universe) if self.ref.universe else {}

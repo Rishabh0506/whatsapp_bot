@@ -22,15 +22,22 @@ from . import replies
 from .static import NoCacheStaticFiles
 
 STATIC = Path(__file__).parent / "dashboard_static"
-SHARED_STATE = ("settings", "reference", "storage", "service")
+SHARED_STATE = ("settings", "reference", "storage", "service", "conversations")
 
 
 async def diagnoses(request: Request):
     wa_id = request.query_params.get("wa_id") or None
     limit = min(int(request.query_params.get("limit", 30)), 200)
     rows = request.app.state.storage.list_diagnoses(wa_id, limit)
-    for r in rows:   # what the customer reads in the chat for this diagnosis (current wording in replies.py)
-        r["reply"] = replies.diagnosis(r["result"], r["id"]) if r["result"] else replies.error(Exception())
+    storage = request.app.state.storage
+    for r in rows:
+        if not r.get("reply"):    # older rows (or a diagnosis replaced by a newer look): rebuild the wording
+            lang = r.get("lang") or "en"
+            r["reply"] = replies.diagnosis(r["result"], lang) if r["result"] else replies.error(None, lang)
+            r["reply_rebuilt"] = True
+        case = storage.get_case(r["case_id"]) if r.get("case_id") else None
+        r["case"] = case
+        r["conversation_open"] = bool(case and not case.get("ended_at"))
     return JSONResponse(rows)
 
 
@@ -43,6 +50,9 @@ async def info(request: Request):
         "prompt": s.get("core.prompt"),
         "bands": {"accept": s.get("rules.accept_threshold"), "unknown_below": s.get("rules.unknown_below")},
         "batch_wait_seconds": s.get("channel.batch_wait_seconds"),
+        "max_tries": s.get("conversation.max_tries", 3),
+        "close_after_seconds": s.get("conversation.close_after_seconds", 300),
+        "keep_records": st.conversations.keep_records,
         "reference": st.reference.source_info(),
         "fields": [{"key": f.key, "label": f.label, "product_deciding": f.product_deciding}
                    for f in st.reference.fields],

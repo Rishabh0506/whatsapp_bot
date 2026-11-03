@@ -7,7 +7,7 @@ Meta's side (the bot cannot tell it apart from the real Cloud API):
   ...and it calls the bot's /webhook with signed Cloud API payloads, plus sent/delivered statuses.
 
 The phone's side (used by the chat page):
-  POST /sim/api/send          user sends photos and/or text
+  POST /sim/api/send          user sends photos, voice notes / videos and/or text
   POST /sim/api/reply         user taps a reply button / list row
   GET  /sim/api/messages      the chat history the phone would show
   GET  /sim/api/media/{id}    photo for display in the chat
@@ -170,28 +170,37 @@ async def api_send(request: Request):
     files = [f for f in form.getlist("photos") if getattr(f, "filename", None)]
     s, sim = request.app.state.settings, request.app.state.sim
     sent = []
-    for i, f in enumerate(files):
+    images = [f for f in files if _media_kind(f) == "image"]
+    for f in files:
+        kind = _media_kind(f)
         data = await f.read()
-        try:
-            if s.get("simulator.compress_like_whatsapp", True):
-                data = compress_like_whatsapp(data, s.get("simulator.max_side", 1600), s.get("simulator.jpeg_quality", 80))
-        except Exception:   # noqa: BLE001
-            return JSONResponse({"error": f"{f.filename} is not an image"}, status_code=400)
+        mime = (getattr(f, "content_type", "") or "").split(";")[0] or "application/octet-stream"
+        if kind == "image":
+            try:
+                if s.get("simulator.compress_like_whatsapp", True):
+                    data = compress_like_whatsapp(data, s.get("simulator.max_side", 1600), s.get("simulator.jpeg_quality", 80))
+            except Exception:   # noqa: BLE001
+                return JSONResponse({"error": f"{f.filename} is not an image"}, status_code=400)
+            mime = "image/jpeg"
         media_id = str(uuid.uuid4().int)[:16]
-        path = sim.media_dir / f"{media_id}.jpg"
+        path = sim.media_dir / f"{media_id}{Path(f.filename).suffix if kind != 'image' else '.jpg'}"
         path.write_bytes(data)
         sha = hashlib.sha256(data).hexdigest()
-        sim.q("INSERT INTO media VALUES (?,?,?,?,?,?)", (media_id, str(path), "image/jpeg", sha, len(data), time.time()))
+        sim.q("INSERT INTO media VALUES (?,?,?,?,?,?)", (media_id, str(path), mime, sha, len(data), time.time()))
         msg_id = _new_wamid()
-        caption = text if (text and i == len(files) - 1) else ""   # WhatsApp attaches the caption to one photo
-        image = {"mime_type": "image/jpeg", "sha256": sha, "id": media_id}
-        if caption:
-            image["caption"] = caption
-        msg = {"from": wa_id, "id": msg_id, "timestamp": str(int(time.time())), "type": "image", "image": image}
+        media = {"mime_type": mime, "sha256": sha, "id": media_id}
+        # WhatsApp attaches the caption to one photo; voice notes and videos are sent on their own
+        if kind == "image" and text and f is images[-1]:
+            media["caption"] = text
+        if kind == "audio":
+            media["voice"] = True
+        msg = {"from": wa_id, "id": msg_id, "timestamp": str(int(time.time())), "type": kind, kind: media}
         sim.q("INSERT INTO messages (id,wa_id,sender,type,body,status,created_at) VALUES (?,?,?,?,?,?,?)",
-              (msg_id, wa_id, "user", "image", json.dumps(msg), "sent", time.time()))
+              (msg_id, wa_id, "user", kind, json.dumps(msg), "sent", time.time()))
         await _post_webhook(request, _envelope({"contacts": _contacts(wa_id, name), "messages": [msg]}))
         sent.append(msg_id)
+    if text and files and not images:          # e.g. a voice note plus typed text: the text goes on its own
+        files = []
     if text and not files:
         msg_id = _new_wamid()
         msg = {"from": wa_id, "id": msg_id, "timestamp": str(int(time.time())), "type": "text", "text": {"body": text}}
@@ -200,6 +209,15 @@ async def api_send(request: Request):
         await _post_webhook(request, _envelope({"contacts": _contacts(wa_id, name), "messages": [msg]}))
         sent.append(msg_id)
     return JSONResponse({"sent": sent})
+
+
+def _media_kind(upload) -> str:
+    """What WhatsApp would send this file as: image, audio (voice note), video or document."""
+    ctype = (getattr(upload, "content_type", "") or "").lower()
+    for kind in ("image", "audio", "video"):
+        if ctype.startswith(kind + "/"):
+            return kind
+    return "document"
 
 
 async def api_reply(request: Request):

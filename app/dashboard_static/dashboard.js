@@ -1,9 +1,23 @@
 // Backend dashboard: the latest diagnosis the bot made, with the 10 fields, confidence, decision and raw output.
-// (Every diagnosis is still stored in data/bot.db; only the newest one is shown here.)
+// Also shows the conversation it belongs to: try number, language, open or closed.
+// (Whether diagnoses are kept after a conversation closes depends on records.keep_after_close in settings.)
 // Polls the dashboard API on this same port. No build step, no libraries.
 const $ = (id) => document.getElementById(id);
-const state = { bands: { accept: 0.8, unknown_below: 0.5 }, fields: {}, lastKey: "" };
-const ACTION = { accept: "Accept", follow_up: "Follow-up needed", better_photo: "Better photo needed", ask_problem: "Ask what the problem is" };
+const state = { bands: { accept: 0.8, unknown_below: 0.5 }, fields: {}, lastKey: "", maxTries: 3 };
+const ACTION = { accept: "Accept", follow_up: "Follow-up needed", better_photo: "Better photo needed",
+  ask_problem: "Ask what the problem is", cobbler: "Refer to a cobbler" };
+const LANG = { en: "English", hi: "Hindi" };
+const END = { timeout: "closed after 5 min quiet", tries: "closed after the last try", greeting: "customer started again",
+  solved: "customer sent a new problem" };
+
+function conversationLine(d) {
+  const parts = [];
+  if (d.try_no) parts.push(`Try ${d.try_no} of ${state.maxTries}`);
+  if (d.lang) parts.push(LANG[d.lang] || d.lang);
+  if (d.case) parts.push(d.conversation_open ? "conversation open" : (END[d.case.end_reason] || "conversation closed"));
+  if (d.case_id) parts.push(`case ${d.case_id}`);
+  return parts.length ? `<div class="conv-line">${esc(parts.join(" · "))}</div>` : "";
+}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const prettyJson = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; } };
@@ -47,11 +61,14 @@ function renderDiagnosis(d) {
     (usage.total_tokens ? ` · ${usage.total_tokens} tokens` : "") +
     (usage.cost_usd != null ? ` · $${Number(usage.cost_usd).toFixed(4)}` : "") +
     (usage.routed_to ? ` · via ${esc(usage.routed_to)}` : "") + ` · ${esc(when)}</span></div>` +
+    conversationLine(d) +
     `<table class="fields">${rows}</table>` +
     `<div class="notes"><div><span class="k">What the model saw:</span> ${esc(r.visible_evidence) || "—"}</div>` +
     `<div><span class="k">Observation note:</span> ${esc(r.observation_note) || "—"}</div>` +
+    `<div><span class="k">Customer wrote:</span> ${esc(d.customer_text) || "—"}</div>` +
     `<div><span class="k">Decision rule:</span> ${esc(dec.reason)}</div>${warnings}` +
-    `<div><span class="k">Customer was told:</span><div class="reply">${esc(d.reply)}</div></div></div>` +
+    `<div><span class="k">Customer was told:</span><div class="reply">${esc(d.reply)}</div>` +
+    (d.reply_rebuilt && d.case_id ? `<div class="sub">(not sent: the bot looked again with a newer photo or message)</div>` : "") + `</div></div>` +
     `<details class="raw"><summary>Raw model output</summary><pre>${esc(prettyJson(r.raw_model_output))}</pre></details>`;
   return card;
 }
@@ -63,7 +80,8 @@ async function pollDiagnoses() {
     if (key === state.lastKey) return;
     state.lastKey = key;
     const box = $("diagnoses");
-    box.innerHTML = rows.length ? "" : '<p class="empty">No diagnosis yet. Send a photo from the chat page and it will appear here.</p>';
+    box.innerHTML = rows.length ? "" : `<p class="empty">No diagnosis to show. Send a photo from the chat page and it will appear here.` +
+      (state.keepRecords ? "" : " (Records are deleted when a conversation closes, so closed conversations disappear.)") + `</p>`;
     rows.forEach((d) => box.appendChild(renderDiagnosis(d)));
   } catch (e) { /* server restarting */ }
 }
@@ -72,6 +90,11 @@ async function loadInfo() {
   try {
     const i = await (await fetch("api/info")).json();
     state.bands = i.bands;
+    state.maxTries = i.max_tries || 3;
+    state.keepRecords = i.keep_records;
+    $("records").textContent = i.keep_records
+      ? "Conversations are kept after they close (records.keep_after_close)."
+      : "Conversations are deleted when they close, so this shows a case only while its conversation is open.";
     i.fields.forEach((f) => (state.fields[f.key] = f));
     $("info").textContent = `${i.channel} · ${i.provider} · ${i.model} · prompt ${i.prompt} · bands ${i.bands.unknown_below} / ${i.bands.accept}`;
   } catch (e) {}

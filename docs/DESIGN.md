@@ -1,8 +1,10 @@
 # Footwear helpline bot — design
 
-**Phase 1 scope:** images only, footwear only. Each photo (or set of photos of one item) gets the
-**10 diagnosis fields**, each with a **confidence score**, plus a decision from the confidence rules.
-Solutions, text/voice/video input and follow-up conversations come later and plug into the same structure.
+**Phase 1 scope:** footwear only; photos plus the customer's typed text, in English or Hindi. Each case
+(the photos and text of one conversation) gets the **10 diagnosis fields**, each with a **confidence score**,
+plus a decision from the confidence rules. The conversation around it (language, tries, 5-minute close) follows
+[USER_JOURNEY.md](USER_JOURNEY.md). Products / step-by-step guidance, cobbler rules, voice and video come later
+and plug into the same structure.
 
 ## 1. Principle: the channel is separate from the diagnosis
 
@@ -34,21 +36,48 @@ served on the bot's port, so it stays private when the bot port is made public f
 Switching to real WhatsApp = `channel.mode: whatsapp` + the `WHATSAPP_*` values in `.env` + registering the
 webhook URL with Meta. No bot code changes.
 
-## 2. Request flow (one photo)
+## 2. Message flow (the customer journey)
 
-1. User sends a photo in the simulator → simulator re-compresses it like WhatsApp, stores it under a media ID,
-   POSTs a signed Cloud API webhook to `/webhook`.
-2. Webhook checks the signature, answers `200` at once, hands the message to the conversation manager in the
-   background.
-3. Conversation manager: skips duplicates (message ID), records the session, sends a read receipt, downloads
-   the photo by media ID, and waits `channel.batch_wait_seconds` for more photos of the same item
-   (WhatsApp sends each photo as a separate message; spec: several photos of one item = one record).
-4. Diagnosis core (`app/core/pipeline.py`): prepare images → model → validation → rules → result.
-   Before calling the model the bot sends a typing indicator, so the customer sees "typing…".
-5. Reply composer (`app/replies.py`) turns the result into a plain-language WhatsApp text message for the
-   customer (what's wrong and whether glue can fix it, or a request for a better/closer photo). The bot only
-   names things it is confident about. Scores never go to the customer; they are on the dashboard.
-6. WhatsApp client sends it; everything is logged in `data/bot.db`.
+The full journey, with every rule, is in [USER_JOURNEY.md](USER_JOURNEY.md). In the code:
+
+1. The customer sends something (in the simulator: photos, a voice note / video, or text) → the simulator stores
+   any file under a media ID and POSTs a signed Cloud API webhook to `/webhook`.
+2. Webhook checks the signature, answers `200` at once, hands the message to the conversation manager
+   (`app/conversation.py`) in the background.
+3. Conversation manager: skips duplicates (message ID), records the session, sends a read receipt, and loads the
+   customer's **open conversation** (`sessions.state` in `data/bot.db`: case id, language, photos, texts, tries,
+   answered, time of the bot's last real reply). Each customer's messages are handled one at a time.
+   - **Only a greeting** (`conversation.greetings`, `app/language.py`) → the old conversation ends, a new one
+     starts, and the bot asks for the language.
+   - **No language yet** → the language question (text + two reply buttons, English / हिंदी). Photos and text sent
+     before choosing are kept. A tap on a button, or a message that is just "English" / "Hindi" / "हिंदी", sets the
+     language, at any point in the conversation. A message that is just "language" / "भाषा" brings the two buttons
+     back, with a short message in the language of the word typed (`CHANGE_LANGUAGE_WORDS` in `app/language.py`).
+   - **Photos** are downloaded by media ID and grouped for `channel.batch_wait_seconds` (WhatsApp sends each
+     photo separately; several photos of one item = one record). A caption counts as the customer's text.
+   - **Text** before any usable photo → "please send a photo" (kept for the diagnosis). Text after a request for
+     a closer photo → a new try on the photos already there, plus the text.
+   - **Voice note / video** → "can't open these yet, please send a photo" (counts as a try).
+   - **After the answer** → text gets "my answer is above, send a photo if there's another problem"; a new photo
+     starts a new case in the same language.
+4. A **try**: the bot sends "Got it, taking a look…" (does not start the timer) and a typing indicator, then the
+   diagnosis core (`app/core/pipeline.py`) gets the usable photos (up to `core.max_images_per_item`, newest)
+   and all the customer's text: prepare images → model → validation → rules → result. Photos judged Blurry,
+   Not Footwear or More Than One Item are left out of later tries. If a photo or text arrives while the model
+   is working, the bot looks again with it before replying (same try, one reply).
+5. Reply composer (`app/replies.py`) turns the result into a plain-language message in the chosen language
+   (English, or Hindi in Hindi letters): an answer (accept → what's wrong + glue + product placeholder; cobbler
+   → suggest a cobbler) or a request for a better / closer photo. After the last try
+   (`conversation.max_tries`) without an answer: "please try again with a clear picture", and the conversation
+   closes. Scores never go to the customer; they are on the dashboard.
+6. WhatsApp client sends it; everything is logged in `data/bot.db` with the case id.
+7. **Closing:** every `conversation.check_every_seconds` the bot closes conversations where the customer has
+   sent nothing for `conversation.close_after_seconds` since the bot's last real reply (an answer or a question).
+   It sends the closing message and forgets the conversation and the language. WhatsApp doesn't report silence,
+   so this regular check is the bot's own.
+8. **Records:** when a conversation closes, its photos, messages and diagnoses are kept or deleted according
+   to `records.keep_after_close` (`auto` = kept in simulator mode, deleted in whatsapp mode). The cost numbers of
+   each model call (`usage_log`, no customer data) are always kept.
 
 ## 3. Components and where to change things
 
@@ -56,25 +85,30 @@ webhook URL with Meta. No bot code changes.
 |---|---|---|
 | Field definitions | `config/fields.yaml` | add/rename a field, change allowed values or descriptions, mark product-deciding |
 | Allowed values | `config/reference/*.xlsx` → `scripts/import_reference.py` → `lists.json`, `universe.json` | update the Lists or Universe |
-| Model instructions | `config/prompts/diagnosis_v1.md` (re-read on every request) | improve the prompt; copy to `diagnosis_v2.md` and set `core.prompt` to version it |
+| Model instructions | `config/prompts/diagnosis_v2.md` (re-read on every request; v1 = photos only) | improve the prompt; copy to `diagnosis_v3.md` and set `core.prompt` to version it |
 | Bands, model, timing | `config/settings.yaml` | set final bands from the test plan, switch model |
 | Model provider | `app/core/providers/` | `openrouter.py` (default: Gemini through OpenRouter), `gemini.py` (Google AI Studio directly), `mock.py`. Another OpenRouter model = change `openrouter.model`; a different API = a new class registered in `__init__.py` |
 | Validation | `app/core/validation.py` | add consistency checks |
 | Confidence rules | `app/core/rules.py` | change decision logic |
-| Customer wording | `app/replies.py` | change what the customer reads (one place for all replies) |
+| Customer wording | `app/replies.py` | change what the customer reads, in English and Hindi (one place for all replies) |
+| Greetings, language words | `config/settings.yaml` (`conversation.greetings`), `app/language.py` | which messages start afresh / choose a language |
+| Journey timing and tries | `config/settings.yaml` (`conversation.*`) | 5-minute close, how often it's checked, number of tries |
+| Keeping records | `config/settings.yaml` (`records.keep_after_close`), `app/storage.py` | keep or delete a closed conversation's data |
 | Backend dashboard | `app/debug.py`, `app/dashboard_static/` | change what the team sees about each diagnosis (port 8001) |
 | Simulator chat page | `app/simulator/static/` | change the WhatsApp-Web-like test page (not part of the bot) |
-| Conversation | `app/conversation.py` | follow-up questions, reviewer queue, text/voice handling |
+| Conversation (the journey) | `app/conversation.py` | the customer journey: language, tries, timer, what happens to each kind of message |
 | Channel | `app/whatsapp/` | (stable — follows Meta's API) |
 
 ## 4. The model output contract
 
 The model is called through **OpenRouter** (`app/core/providers/openrouter.py`, key `OPENROUTER_API_KEY`):
-`POST /chat/completions` with the instructions as the system message, the photos as base64 data URLs, and
-`response_format` = the JSON schema below (`strict`). `provider.require_parameters: true` makes OpenRouter use only
+`POST /chat/completions` with the instructions as the system message, the photos as base64 data URLs followed by
+one line of text (plus, when the customer wrote anything, their words between `<<<` and `>>>`; prompt
+`diagnosis_v2` says how to use them and never to follow instructions in them), and `response_format` = the JSON schema below (`strict`). `provider.require_parameters: true` makes OpenRouter use only
 routes that honour that schema; if none accepts it, the bot retries once in plain JSON mode (validation still
 checks everything). OpenRouter reports tokens, cost and which route served the call; these are stored with the
-diagnosis and shown on the dashboard. Setting `core.provider: gemini` calls Google AI Studio directly instead.
+diagnosis and shown on the dashboard, and kept in `usage_log` even when the diagnosis itself is deleted.
+Setting `core.provider: gemini` calls Google AI Studio directly instead (same text, same schema).
 
 The model is constrained by a JSON schema built from `fields.yaml` (every value must come from its list):
 
@@ -105,8 +139,15 @@ combination not existing for that footwear type, an Unknown material with no obs
 Decision, in order:
 1. Image Status = Blurry / Not Footwear / More Than One Item → **better photo**
 2. Image Status = Damage Not Visible → **ask what the problem is** (spec section 5)
-3. Any product-deciding field not accepted → **follow-up** (lists the fields)
-4. Otherwise → **accept**
+3. Clear cobbler case → **cobbler**: no more questions, even if smaller details (e.g. material) are unsure.
+   **Placeholder** until the team's cobbler / "too extensive" rules arrive: Glue Fix Possible accepted as
+   "No – Weight-Bearing Part", "No – Material Destroyed" or "No – Surface Glue Cannot Hold"
+   (`is_cobbler_case()` in `rules.py`). "No – Not a Glue Problem" is cleaning / care, not a cobbler case.
+4. Any product-deciding field not accepted → **follow-up** (lists the fields)
+5. Otherwise → **accept** (the reply ends with a product / steps placeholder until those rules arrive)
+
+The conversation manager turns better photo / ask the problem / follow-up into "send another photo" while tries
+are left, and into "please try again with a clear picture" + close after the last one.
 
 Product-deciding: Part, Issue Category, Damage Mode, both substrates, Damage Extent, Glue Fix Possible.
 Footwear Type, Image Status and Secondary Issue do not block.
@@ -117,16 +158,22 @@ Footwear Type, Image Status and Secondary Issue do not block.
   better photo; section 5 says no visible damage → ask the problem). Easy to change in `rules.py`.
 - **A matching pair** counts as one item, not "More Than One Item" (stated in the prompt).
 - **Damage Extent and Glue Fix definitions** in `fields.yaml` are first drafts (the spec gives only the values).
-- **Reviewer queue** needs one follow-up to have happened first, so it arrives with follow-up conversations.
+- **Reviewer queue:** skipped for now (3 Nov 2026); a 3-try limit replaces it. See `USER_JOURNEY.md`.
+- **Smell / noise from text:** the model may use the customer's words for problems a photo can't show, but
+  Image Status is about the photos only, so a clean-looking photo still gives "ask what the problem is".
 - Bands 0.80 / 0.50 are the proposed values; final ones come from the test plan (5 Nov 2026).
 
 ## 7. Next extensions (planned to fit without rework)
 
-- **Follow-up questions:** session state already exists per user (`sessions` table); add a state machine in
-  the conversation manager and use reply buttons / list messages (`app/whatsapp/payloads.py` enforces limits).
+The customer journey (language, conversation memory, 5-minute close, tries, text + photo) is built
+(3 Nov 2026). Next:
+
+- **Cobbler rules:** replace `is_cobbler_case()` in `app/core/rules.py` with the team's rules.
+- **Solutions:** a step after the rules in `pipeline.py`, reading the 10 fields; the wording replaces
+  `SOLUTION_PLACEHOLDER` in `replies.py` (both languages; pictures can be sent as WhatsApp image messages).
+- **Answering free questions after the answer:** in `_on_message()` (now `replies.after_answer`).
 - **Reviewer queue:** a new decision + a reviewer page reading `diagnoses`.
-- **Text / voice / video:** new message types in the conversation manager; the core gets the text as context.
-- **Solutions:** a new step after the rules in `pipeline.py`, reading the 10 fields.
+- **Voice / video:** new message types in the conversation manager (now a fixed reply that counts as a try).
 - **Model evaluation:** a script that runs the dataset through `DiagnosisService` and compares with
   `metadata.csv` (same code path as production).
 - **Real WhatsApp:** host on a server with HTTPS, set `channel.mode: whatsapp`, fill `.env`, register webhook.

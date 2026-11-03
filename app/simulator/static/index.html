@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Footwear Helpline · WhatsApp simulator</title>
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 <!-- Plays the CUSTOMER's WhatsApp (laid out like WhatsApp Web). The bot talks to this page only through the
@@ -78,8 +78,8 @@
     <div class="thread" id="thread"></div>
 
     <form class="composer" id="composer">
-      <label class="icon-btn attach" title="Attach photos" aria-label="Attach photos">
-        <input id="photos" type="file" accept="image/*" multiple hidden>
+      <label class="icon-btn attach" title="Attach photos, a voice note or a video" aria-label="Attach photos, a voice note or a video">
+        <input id="photos" type="file" accept="image/*,audio/*,video/*" multiple hidden>
         <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6z"/></svg>
       </label>
       <textarea id="text" rows="1" placeholder="Type a message" autocomplete="off"></textarea>
@@ -110,11 +110,11 @@
       </div>
     </section>
 
-    <div class="drop-hint" id="dropHint" hidden>Drop photos here</div>
+    <div class="drop-hint" id="dropHint" hidden>Drop photos, a voice note or a video here</div>
   </main>
 </div>
 
 <div class="sheet-back" id="sheet" hidden></div>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

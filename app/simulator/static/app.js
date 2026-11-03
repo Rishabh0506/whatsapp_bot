@@ -95,6 +95,7 @@ function bodyOf(m) {
   const b = m.body || {};
   if (m.type === "text") return { text: (b.text || {}).body || "" };
   if (m.type === "image") return { image: (b.image || {}).id, link: (b.image || {}).link, text: (b.image || {}).caption || "" };
+  if (m.type === "audio" || m.type === "video") return { media: (b[m.type] || {}).id, kind: m.type };
   if (m.type === "interactive") {
     const it = b.interactive || {};
     if (m.sender === "user") return { text: (it.button_reply || it.list_reply || {}).title || "" };
@@ -125,8 +126,13 @@ function renderMessage(m) {
     const src = c.image ? `/sim/api/media/${encodeURIComponent(c.image)}` : c.link;
     html += `<img src="${esc(src)}" alt="Photo">`;
   }
+  if (c.media) {
+    const src = `/sim/api/media/${encodeURIComponent(c.media)}`;
+    html += c.kind === "audio" ? `<div class="voice">🎤 Voice message<audio controls preload="none" src="${esc(src)}"></audio></div>`
+      : `<video controls preload="metadata" src="${esc(src)}"></video>`;
+  }
   if (c.text) html += `<div class="text">${formatWhatsApp(c.text)}<span class="spacer"></span></div>`;
-  else if (!c.image && !c.link) html += `<div class="text"><span class="spacer"></span></div>`;
+  else if (!c.image && !c.link && !c.media) html += `<div class="text"><span class="spacer"></span></div>`;
   const actions = c.interactive ? renderActions(c.interactive, m.id) : "";
 
   const bubble = document.createElement("div");
@@ -154,7 +160,9 @@ function renderActions(it, msgId) {
 function setLastMessage(m) {
   if (!m) { $("lastMsg").textContent = "Send a photo of the footwear that needs fixing"; $("lastTime").textContent = ""; return; }
   const c = bodyOf(m);
-  const text = (c.image || c.link) ? "📷 " + (c.text || "Photo") : (c.text || "").split("\n").find((l) => l.trim()) || "";
+  const text = (c.image || c.link) ? "📷 " + (c.text || "Photo")
+    : c.media ? (c.kind === "audio" ? "🎤 Voice message" : "🎥 Video")
+    : (c.text || "").split("\n").find((l) => l.trim()) || "";
   $("lastMsg").innerHTML = (m.sender === "user" ? ticks(m.status) : "") + `<span>${esc(text)}</span>`;
   $("lastTime").textContent = hhmm(m.created_at);
 }
@@ -251,8 +259,11 @@ $("composer").addEventListener("submit", async (e) => {
   if (!(await send({ text }))) { textBox.value = text; autosize(); }
 });
 
-// photo preview (WhatsApp Web asks for a caption before sending photos)
+// photo preview (WhatsApp Web asks for a caption before sending photos).
+// Voice notes and videos are sent straight away, as their own messages.
 function addPhotos(files) {
+  const other = [...files].filter((f) => f.type.startsWith("audio/") || f.type.startsWith("video/"));
+  if (other.length) send({}, other);
   const imgs = [...files].filter((f) => f.type.startsWith("image/"));
   if (!imgs.length) return;
   imgs.forEach((f) => state.pending.push({ file: f, url: URL.createObjectURL(f) }));
